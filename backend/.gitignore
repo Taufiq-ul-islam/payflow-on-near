@@ -1,0 +1,95 @@
+# ==========================================
+# Environment variables and secrets
+# ==========================================
+.env
+.env.*
+!.env.example
+!.env.local.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# ==========================================
+# Python / FastAPI backend
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ==========================================
+# Next.js / Node frontend
+# ==========================================
+node_modules/
+.next/
+out/
+dist/
+build/
+.turbo/
+.vercel/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ==========================================
+# Rust / NEAR smart contracts
+# ==========================================
+target/
+Cargo.lock
+*.wasm
+*.contract
+*.log
+
+# ==========================================
+# IDEs and editors
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# Database / local development
+# ==========================================
+*.sqlite
+*.sqlite3
+*.db
+postgres-data/
+pgdata/
+
+# ==========================================
+# Testing and coverage
+# ==========================================
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# ==========================================
+# Temporary files
+# ==========================================
+*.tmp
+*.temp
+*.bak
+*.old
+*.zip
+*.tar
+*.gz

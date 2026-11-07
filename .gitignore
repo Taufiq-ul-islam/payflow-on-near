@@ -1,0 +1,84 @@
+
+# ==========================================
+# FRONTEND — Next.js / Node.js
+# ==========================================
+
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/dist/
+frontend/coverage/
+frontend/.turbo/
+frontend/.vercel/
+
+# Frontend environment variables / secrets
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+!frontend/.env.*.example
+
+# ==========================================
+# BACKEND — Python / FastAPI
+# ==========================================
+
+backend/__pycache__/
+backend/**/*.py[cod]
+backend/*.py[cod]
+
+# Virtual environments
+backend/venv/
+backend/.venv/
+backend/env/
+backend/.virtualenv/
+
+# Python packaging
+backend/build/
+backend/dist/
+backend/*.egg-info/
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.coverage
+backend/htmlcov/
+
+# Backend environment variables / secrets
+backend/.env
+backend/.env.*
+!backend/.env.example
+!backend/.env.*.example
+
+# Logs and local databases
+backend/*.log
+backend/*.sqlite
+backend/*.sqlite3
+backend/*.db
+
+# ==========================================
+# GENERAL — OS / EDITORS
+# ==========================================
+
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+.vscode/
+.idea/
+
+*.log
+*.tmp
+*.swp
+*.bak
+
+# ==========================================
+# LOCAL SECRETS — root
+# ==========================================
+
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# ===========================================
+
+*.zip
