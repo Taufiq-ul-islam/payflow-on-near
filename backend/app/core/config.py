@@ -18,7 +18,9 @@ class Settings(BaseSettings):
     relayer_max_gas: int = 100_000_000_000_000
     internal_api_key: str = ""
 
-    usdc_asset_id: str = ""
+    usdc_asset_id: str = "nep141:usdc.tidepool-sandbox.testnet"
+    usdc_decimals: int = 6
+
     frontend_url: str = "http://localhost:3000"
 
     model_config = SettingsConfigDict(

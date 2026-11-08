@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { apiRequest, DEMO_FREELANCER_ID } from "@/lib/api";
-import { formatDateTime, shortAddress } from "@/lib/format";
+import { formatDateTime, shortAddress, formatTokenAmount } from "@/lib/format";
 import type { PaymentAttempt } from "@/lib/types";
 import StatusBadge from "@/components/ui/status-badge";
 
@@ -121,7 +121,9 @@ export default function PaymentsPage() {
                       {payment.destination_asset || "USDC"}
                     </td>
                     <td className="px-6 py-4 font-semibold">
-                      {payment.received_amount || "—"}
+                      {payment.received_amount != null
+                        ? `${formatTokenAmount(String(payment.received_amount), 6, 6)} USDC`
+                        : "—"}
                     </td>
                     <td className="px-6 py-4">
                       <StatusBadge status={payment.status} />

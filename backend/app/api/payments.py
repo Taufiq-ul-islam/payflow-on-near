@@ -1,18 +1,17 @@
-from uuid import UUID
+from uuid import UUID, uuid4
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.database import get_db
-from app.integrations.near_intents import (
-    near_intents,
-    NearIntentsError,
-)
+from app.integrations.near_intents import near_intents, NearIntentsError
 from app.models.invoice import Invoice
 from app.models.payment import PaymentAttempt, Transaction
 from app.schemas.payment import DepositSubmitRequest
-from app.services.payment_service import create_payment_quote
-from app.services.reconciliation import reconcile_payment
+from app.services.payment_service import create_payment_quote, convert_usdc_to_units
+from app.services.reconciliation import reconcile_payment, reconcile_direct_near_payment, NearRPCError
+from app.core.config import settings
 
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
@@ -33,7 +32,60 @@ def serialize_attempt(attempt):
         "deposit_memo": attempt.deposit_memo,
         "expected_amount": attempt.expected_amount,
         "destination_asset": attempt.destination_asset,
+        "payment_mode": (
+            (attempt.quote_response or {}).get("payment_mode", "INTENTS")
+        ),
     }
+
+
+
+@router.get("/")
+def list_payment_attempts(
+    freelancer_id: str = Query(..., min_length=1),
+    db: Session = Depends(get_db),
+):
+    attempts = (
+        db.query(PaymentAttempt)
+        .join(Invoice, PaymentAttempt.invoice_id == Invoice.id)
+        .options(
+            joinedload(PaymentAttempt.invoice),
+            selectinload(PaymentAttempt.transactions),
+        )
+        .filter(Invoice.freelancer_id == freelancer_id)
+        .order_by(PaymentAttempt.created_at.desc())
+        .all()
+    )
+
+    return [
+        {
+            "id": str(attempt.id),
+            "payment_attempt_id": str(attempt.id),
+            "invoice_id": str(attempt.invoice_id),
+            "invoice_number": attempt.invoice.invoice_number,
+            "client_name": attempt.invoice.client_name,
+            "status": attempt.status,
+            "deposit_address": attempt.deposit_address,
+            "deposit_memo": attempt.deposit_memo,
+            "source_asset": attempt.source_asset,
+            "destination_asset": attempt.destination_asset,
+            "expected_amount": attempt.expected_amount,
+            "received_amount": attempt.received_amount,
+            "created_at": attempt.created_at,
+            "transactions": [
+                {
+                    "id": str(transaction.id),
+                    "chain": transaction.chain,
+                    "tx_hash": transaction.tx_hash,
+                    "transaction_type": transaction.transaction_type,
+                    "amount": transaction.amount,
+                    "explorer_url": transaction.explorer_url,
+                    "created_at": transaction.created_at,
+                }
+                for transaction in attempt.transactions
+            ],
+        }
+        for attempt in attempts
+    ]
 
 
 @router.get("/tokens")
@@ -67,6 +119,153 @@ async def request_quote(
         raise HTTPException(400, str(exc))
     except NearIntentsError as exc:
         raise HTTPException(502, str(exc))
+
+
+@router.post("/direct/{invoice_id}")
+def create_direct_payment(
+    invoice_id: UUID,
+    idempotency_key: str = Header(
+        ...,
+        alias="Idempotency-Key",
+        min_length=8,
+        max_length=128,
+    ),
+    db: Session = Depends(get_db),
+):
+    # Idempotent retry.
+    existing = (
+        db.query(PaymentAttempt)
+        .filter(PaymentAttempt.idempotency_key == idempotency_key)
+        .first()
+    )
+
+    if existing:
+        if existing.invoice_id != invoice_id:
+            raise HTTPException(
+                409,
+                "Idempotency key was already used for another invoice",
+            )
+
+        if (
+            (existing.quote_response or {}).get("payment_mode")
+            != "DIRECT_NEAR"
+        ):
+            raise HTTPException(
+                409,
+                "Idempotency key belongs to a different payment method",
+            )
+
+        return {
+            **serialize_attempt(existing),
+            "quote": existing.quote_response,
+        }
+
+    invoice = (
+        db.query(Invoice)
+        .filter(Invoice.id == invoice_id)
+        .with_for_update()
+        .first()
+    )
+
+    if not invoice:
+        db.rollback()
+        raise HTTPException(404, "Invoice not found")
+
+    if invoice.status != "PENDING":
+        db.rollback()
+        raise HTTPException(409, "Invoice is not payable")
+
+    if not invoice.freelancer_id:
+        db.rollback()
+        raise HTTPException(400, "Freelancer NEAR account is missing")
+
+    if not settings.usdc_asset_id.startswith("nep141:"):
+        db.rollback()
+        raise HTTPException(
+            400,
+            "Direct payment requires a NEAR NEP-141 USDC asset",
+        )
+
+    if invoice.due_date:
+        due_date = invoice.due_date
+
+        if due_date.tzinfo is None:
+            due_date = due_date.replace(tzinfo=timezone.utc)
+
+        if due_date < datetime.now(timezone.utc):
+            db.rollback()
+            raise HTTPException(400, "Invoice has expired")
+
+    active_attempt = (
+        db.query(PaymentAttempt)
+        .filter(
+            PaymentAttempt.invoice_id == invoice_id,
+            PaymentAttempt.status.in_(ACTIVE_STATUSES),
+        )
+        .first()
+    )
+
+    if active_attempt:
+        db.rollback()
+        raise HTTPException(
+            409,
+            "An active payment attempt already exists",
+        )
+
+    try:
+        amount_units = convert_usdc_to_units(invoice.total)
+
+        attempt_id = uuid4()
+
+        # Synthetic unique internal address because the existing
+        # database column is non-nullable and unique.
+        # The actual recipient is stored in quoteRequest.recipient.
+        quote_response = {
+            "payment_mode": "DIRECT_NEAR",
+            "quoteRequest": {
+                "originAsset": settings.usdc_asset_id,
+                "destinationAsset": settings.usdc_asset_id,
+                "recipient": invoice.freelancer_id,
+                "amount": amount_units,
+            },
+            "quote": {
+                "amountIn": amount_units,
+                "amountOut": amount_units,
+            },
+        }
+
+        attempt = PaymentAttempt(
+            id=attempt_id,
+            invoice_id=invoice.id,
+            idempotency_key=idempotency_key,
+
+            quote_response=quote_response,
+
+            deposit_address=f"direct-near:{attempt_id}",
+            deposit_memo=None,
+
+            source_asset=settings.usdc_asset_id,
+            destination_asset=settings.usdc_asset_id,
+
+            expected_input_amount=amount_units,
+            expected_amount=amount_units,
+
+            refund_address=None,
+            status="PENDING_DEPOSIT",
+        )
+
+        db.add(attempt)
+        db.commit()
+        db.refresh(attempt)
+
+        return {
+            **serialize_attempt(attempt),
+            "quote": quote_response,
+        }
+
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc))
 
 
 @router.post("/commit/{invoice_id}")
@@ -241,6 +440,40 @@ async def submit_deposit(
             "Transaction hash is already associated with another payment",
         )
 
+    # Direct NEAR USDC payment: do not submit anything to Tidepool.
+    if (
+        (attempt.quote_response or {}).get("payment_mode") == "DIRECT_NEAR"
+    ):
+        sender_account = (data.near_sender_account or "").strip()
+
+        if not sender_account:
+            raise HTTPException(
+                400, "Payer NEAR account ID is required for direct payment",
+            )
+
+        transaction = Transaction(
+            payment_attempt_id=attempt.id,
+            chain="NEAR",
+            tx_hash=data.tx_hash,
+            transaction_type="DIRECT_PAYMENT",
+            amount=attempt.expected_amount,
+            explorer_url=(f"https://testnet.nearblocks.io/txns/{data.tx_hash}"),
+        )
+
+        attempt.provider_response = {
+            "direct_sender_account": sender_account,
+        }
+        attempt.status = "PROCESSING"
+
+        db.add(transaction)
+        db.commit()
+
+        return {
+            "status": attempt.status,
+            "payment_mode": "DIRECT_NEAR",
+            "message": "Transaction submitted for NEAR verification",
+        }
+    
     try:
         result = await near_intents.submit_deposit(
             deposit_address=attempt.deposit_address,
@@ -289,9 +522,14 @@ async def payment_status(
         raise HTTPException(404, "Payment attempt not found")
 
     try:
-        result = await reconcile_payment(db, attempt)
-        return result
+        if ((attempt.quote_response or {}).get("payment_mode") == "DIRECT_NEAR"):
+            return await reconcile_direct_near_payment(db, attempt)
+        
+        return await reconcile_payment(db, attempt)
+
     except NearIntentsError as exc:
+        raise HTTPException(502, str(exc))
+    except NearRPCError as exc:
         raise HTTPException(502, str(exc))
     except ValueError as exc:
         raise HTTPException(409, str(exc))

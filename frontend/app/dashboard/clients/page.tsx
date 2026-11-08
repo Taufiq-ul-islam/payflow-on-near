@@ -52,19 +52,39 @@ export default function ClientsPage() {
         freelancer_id: DEMO_FREELANCER_ID,
       });
 
-      await apiRequest(`/clients/?${params.toString()}`, {
-        method: "POST",
-        body: JSON.stringify({
-          name, email, company: company || null,
-        }),
-      });
+      const createdClient = await apiRequest<Client>(
+        `/clients/?${params.toString()}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name,
+            email,
+            company: company || null,
+          }),
+        }
+      );
 
+      // Immediately display the successfully created client.
+      setClients((previous) => [
+        createdClient,
+        ...previous.filter((client) => client.id !== createdClient.id),
+      ]);
+
+      // Clear the form only after successful creation.
       setName("");
       setEmail("");
       setCompany("");
-      await loadClients();
+
+      // Refresh separately. A refresh failure must not undo creation.
+      try {
+        await loadClients();
+      } catch {
+        // loadClients handles its own errors.
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not add client");
+      setError(
+        err instanceof Error ? err.message : "Could not add client"
+      );
     } finally {
       setSaving(false);
     }

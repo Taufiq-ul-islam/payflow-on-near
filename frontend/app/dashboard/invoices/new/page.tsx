@@ -1,11 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { apiRequest, DEMO_FREELANCER_ID } from "@/lib/api";
 import { formatCurrency } from "@/lib/format";
+import type { Client } from "@/lib/types";
 
 interface Item {
   description: string;
@@ -15,6 +16,11 @@ interface Item {
 
 export default function NewInvoicePage() {
   const router = useRouter();
+
+  const [clients, setClients] = useState<Client[]>([]);
+  const [clientsLoading, setClientsLoading] = useState(true);
+  const [clientLoadError, setClientLoadError] = useState("");
+  const [selectedClientId, setSelectedClientId] = useState("");
 
   const [clientName, setClientName] = useState("");
   const [clientEmail, setClientEmail] = useState("");
@@ -26,6 +32,48 @@ export default function NewInvoicePage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    async function loadClients() {
+      try {
+        setClientsLoading(true);
+        setClientLoadError("");
+
+        const params = new URLSearchParams({
+          freelancer_id: DEMO_FREELANCER_ID,
+        });
+
+        const result = await apiRequest<Client[]>(
+          `/clients/?${params.toString()}`
+        );
+
+        setClients(Array.isArray(result) ? result : []);
+      } catch (err) {
+        setClientLoadError(
+          err instanceof Error ? err.message : "Could not load saved clients."
+        );
+      } finally {
+        setClientsLoading(false);
+      }
+    }
+
+    loadClients();
+  }, []);
+
+  function handleClientSelect(clientId: string) {
+    setSelectedClientId(clientId);
+
+    if (!clientId) return;
+
+    const selectedClient = clients.find(
+      (client) => client.id === clientId
+    );
+
+    if (selectedClient) {
+      setClientName(selectedClient.name);
+      setClientEmail(selectedClient.email);
+    }
+  }
 
   const total = useMemo(
     () =>
@@ -84,7 +132,9 @@ export default function NewInvoicePage() {
           item.unit_price === ""
       )
     ) {
-      setError("Check each line item. Quantity must be positive and price cannot be negative.");
+      setError(
+        "Check each line item. Quantity must be positive and price cannot be negative."
+      );
       return;
     }
 
@@ -138,7 +188,70 @@ export default function NewInvoicePage() {
 
       <form onSubmit={submitInvoice} className="space-y-6">
         <section className="rounded-2xl border border-slate-200 bg-white p-6">
-          <h2 className="font-semibold">Client details</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-semibold">Client details</h2>
+              <p className="mt-1 text-xs text-slate-500">
+                Select a saved client or enter their details manually.
+              </p>
+            </div>
+
+            <Link
+              href="/dashboard/clients"
+              className="text-sm font-semibold text-slate-700 hover:text-slate-950"
+            >
+              + Manage clients
+            </Link>
+          </div>
+
+          <div className="mt-5">
+            <label className="text-sm font-medium">
+              Select saved client
+
+              <select
+                value={selectedClientId}
+                onChange={(event) =>
+                  handleClientSelect(event.target.value)
+                }
+                disabled={clientsLoading || clients.length === 0}
+                className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-4 py-3 font-normal outline-none focus:border-slate-400 disabled:bg-slate-50 disabled:text-slate-400"
+              >
+                <option value="">
+                  {clientsLoading
+                    ? "Loading clients..."
+                    : clients.length === 0
+                      ? "No saved clients available"
+                      : "Choose a client (optional)"}
+                </option>
+
+                {clients.map((client) => (
+                  <option key={client.id} value={client.id}>
+                    {client.name} ({client.email})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {!clientsLoading && clients.length === 0 && (
+              <p className="mt-2 text-xs text-slate-500">
+                You haven't saved any clients yet.{" "}
+                <Link
+                  href="/dashboard/clients"
+                  className="font-semibold text-slate-800 underline"
+                >
+                  Add a client
+                </Link>
+                {" "}or enter their details below.
+              </p>
+            )}
+
+            {clientLoadError && (
+              <p className="mt-2 text-xs text-rose-600">
+                Could not load saved clients: {clientLoadError}. You can
+                still enter client details manually.
+              </p>
+            )}
+          </div>
 
           <div className="mt-5 grid gap-4 sm:grid-cols-2">
             <label className="text-sm font-medium">
@@ -280,6 +393,7 @@ export default function NewInvoicePage() {
           >
             Cancel
           </Link>
+
           <button
             type="submit"
             disabled={loading}

@@ -1,3 +1,4 @@
+from uuid import UUID
 from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, EmailStr, ConfigDict, Field
@@ -18,7 +19,7 @@ class ClientUpdate(BaseModel):
 
 
 class ClientResponse(BaseModel):
-    id: str
+    id: UUID
     name: str
     email: EmailStr
     company: Optional[str] = None

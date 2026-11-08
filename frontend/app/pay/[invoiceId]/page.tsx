@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 
 import { apiRequest } from "@/lib/api";
-import { formatCurrency, formatDate, shortAddress } from "@/lib/format";
+import { formatCurrency, formatDate, shortAddress , formatTokenAmount } from "@/lib/format";
 import type { Invoice, PaymentStatus } from "@/lib/types";
 import StatusBadge from "@/components/ui/status-badge";
 
@@ -44,6 +44,40 @@ interface CommittedAttempt {
   expected_amount: string;
   destination_asset: string;
   quote: QuoteResponse;
+  payment_mode?: "DIRECT_NEAR" | "INTENTS";
+}
+
+const DIRECT_NEAR_USDC_ASSET_ID =
+  "nep141:usdc.tidepool-sandbox.testnet";
+
+function decimalToBaseUnits(value: string, decimals: number): string {
+  const match = /^(\d+)(?:\.(\d*))?$/.exec(value.trim());
+
+  if (!match) {
+    throw new Error("Invalid invoice amount");
+  }
+
+  const whole = match[1];
+  const fraction = match[2] ?? "";
+
+  // Permit extra trailing zeroes, but never silently discard value.
+  if (
+    fraction.length > decimals &&
+    /[1-9]/.test(fraction.slice(decimals))
+  ) {
+    throw new Error(
+      `Amount supports at most ${decimals} decimal places`
+    );
+  }
+
+  const normalizedFraction = fraction.slice(0, decimals).padEnd(decimals, "0");
+
+  const scale = 10n ** BigInt(decimals);
+
+  return (
+    BigInt(whole) * scale +
+    BigInt(normalizedFraction || "0")
+  ).toString();
 }
 
 function PublicPaymentPageContent() {
@@ -55,6 +89,7 @@ function PublicPaymentPageContent() {
   const [selectedAsset, setSelectedAsset] = useState("");
   const [refundAddress, setRefundAddress] = useState("");
 
+  const [payerNearAccount, setPayerNearAccount] = useState("");
   const [quote, setQuote] = useState<QuoteResponse | null>(null);
   const [attempt, setAttempt] = useState<CommittedAttempt | null>(null);
 
@@ -100,9 +135,21 @@ function PublicPaymentPageContent() {
     [tokens, selectedAsset]
   );
 
+  const isDirectNearUsdc = selectedToken?.assetId === DIRECT_NEAR_USDC_ASSET_ID;
+
   async function requestQuote() {
-    if (!selectedAsset || !refundAddress.trim()) {
-      setError("Select a token and enter a refund address.");
+    if (!selectedAsset || !selectedToken) {
+      setError("Select a supported payment token.");
+      return;
+    }
+
+    if (isDirectNearUsdc && !payerNearAccount.trim()) {
+      setError("Enter your NEAR wallet account ID.");
+      return;
+    }
+
+    if (!isDirectNearUsdc && !refundAddress.trim()) {
+      setError("Enter a refund address.");
       return;
     }
 
@@ -111,6 +158,28 @@ function PublicPaymentPageContent() {
       setError("");
       setQuote(null);
       setAttempt(null);
+
+      if (isDirectNearUsdc) {
+        const amount = decimalToBaseUnits(
+          invoice!.total,
+          selectedToken.decimals
+        );
+
+        setQuote({
+          quoteRequest: {
+            amount,
+            originAsset: selectedAsset,
+            destinationAsset: selectedAsset,
+            recipient: invoice!.freelancer_id,
+          },
+          quote: {
+            amountIn: amount,
+            amountOut: amount,
+          },
+        });
+
+        return;
+      }
 
       const query = new URLSearchParams({
         source_asset: selectedAsset,
@@ -124,38 +193,66 @@ function PublicPaymentPageContent() {
 
       setQuote(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Quote request failed");
+      setError(
+        err instanceof Error ? err.message : "Quote request failed"
+      );
     } finally {
       setQuoting(false);
     }
   }
 
   async function commitQuote() {
-    if (!selectedAsset || !refundAddress.trim()) return;
+    if (!selectedAsset) return;
+
+    if (isDirectNearUsdc && !payerNearAccount.trim()) {
+      setError("Enter your NEAR wallet account ID.");
+      return;
+    }
+
+    if (!isDirectNearUsdc && !refundAddress.trim()) {
+      setError("Enter a refund address.");
+      return;
+    }
 
     try {
       setCommitting(true);
       setError("");
 
-      const query = new URLSearchParams({
-        source_asset: selectedAsset,
-        refund_address: refundAddress.trim(),
-      });
+      let result: CommittedAttempt;
 
-      const result = await apiRequest<CommittedAttempt>(
-        `/payments/commit/${invoiceId}?${query.toString()}`,
-        {
-          method: "POST",
-          headers: {
-            "Idempotency-Key": idempotencyKey,
-          },
-        }
-      );
+      if (isDirectNearUsdc) {
+        result = await apiRequest<CommittedAttempt>(
+          `/payments/direct/${invoiceId}`,
+          {
+            method: "POST",
+            headers: {
+              "Idempotency-Key": idempotencyKey,
+            },
+          }
+        );
+      } else {
+        const query = new URLSearchParams({
+          source_asset: selectedAsset,
+          refund_address: refundAddress.trim(),
+        });
+
+        result = await apiRequest<CommittedAttempt>(
+          `/payments/commit/${invoiceId}?${query.toString()}`,
+          {
+            method: "POST",
+            headers: {
+              "Idempotency-Key": idempotencyKey,
+            },
+          }
+        );
+      }
 
       setAttempt(result);
       setPaymentStatus(result.status);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create payment");
+      setError(
+        err instanceof Error ? err.message : "Could not create payment"
+      );
     } finally {
       setCommitting(false);
     }
@@ -164,6 +261,19 @@ function PublicPaymentPageContent() {
   async function submitDeposit() {
     if (!attempt || !txHash.trim()) {
       setError("Enter the source-chain transaction hash.");
+      return;
+    }
+
+    const direct = attempt.payment_mode === "DIRECT_NEAR";
+
+    const nearSenderAccount = direct
+      ? payerNearAccount.trim()
+      : selectedToken?.blockchain.toLowerCase() === "near"
+        ? refundAddress.trim()
+        : undefined;
+
+    if (direct && !nearSenderAccount) {
+      setError("Enter the payer's NEAR account ID.");
       return;
     }
 
@@ -177,6 +287,9 @@ function PublicPaymentPageContent() {
           method: "POST",
           body: JSON.stringify({
             tx_hash: txHash.trim(),
+            ...(nearSenderAccount
+              ? { near_sender_account: nearSenderAccount }
+              : {}),
           }),
         }
       );
@@ -240,6 +353,14 @@ function PublicPaymentPageContent() {
   }
 
   const payable = invoice.status === "PENDING";
+
+  const isDirectAttempt = attempt?.payment_mode === "DIRECT_NEAR";
+
+  const paymentRecipient = isDirectAttempt
+    ? attempt?.quote.quoteRequest?.recipient ||
+      invoice.freelancer_id ||
+      ""
+    : attempt?.deposit_address || "";
 
   return (
     <main className="min-h-screen bg-[#f7f8fa] px-4 py-10 text-slate-900">
@@ -370,21 +491,40 @@ function PublicPaymentPageContent() {
                   </p>
                 )}
 
-                <label className="mt-5 block text-sm font-semibold">
-                  Refund address
-                  <input
-                    value={refundAddress}
-                    onChange={(event) => setRefundAddress(event.target.value)}
-                    placeholder="Your wallet address on the selected source chain"
-                    className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none focus:border-slate-400"
-                  />
-                  <span className="mt-2 block text-xs font-normal text-slate-400">
-                    Used only if the swap needs to refund your payment.
-                  </span>
-                </label>
+                {isDirectNearUsdc ? (
+                  <label className="mt-5 block text-sm font-semibold">
+                    Your NEAR wallet account
+                    <input
+                      value={payerNearAccount}
+                      onChange={(event) => setPayerNearAccount(event.target.value)}
+                      placeholder="client.testnet"
+                      className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none focus:border-slate-400"
+                    />
+                    <span className="mt-2 block text-xs font-normal text-slate-400">
+                      Used to verify that the direct USDC transfer was sent by you.
+                    </span>
+                  </label>
+                ) : (
+                  <label className="mt-5 block text-sm font-semibold">
+                    Refund address
+                    <input
+                      value={refundAddress}
+                      onChange={(event) => setRefundAddress(event.target.value)}
+                      placeholder="Your wallet address on the selected source chain"
+                      className="mt-2 w-full rounded-xl border border-slate-200 px-4 py-3 font-normal outline-none focus:border-slate-400"
+                    />
+                    <span className="mt-2 block text-xs font-normal text-slate-400">
+                      Used only if the swap needs to refund your payment.
+                    </span>
+                  </label>
+                )}
 
                 <button
-                  disabled={!selectedAsset || !refundAddress.trim() || quoting}
+                  disabled={
+                    !selectedAsset || 
+                    (isDirectNearUsdc ? !payerNearAccount.trim(): !refundAddress.trim()) ||
+                    quoting
+                  }
                   onClick={requestQuote}
                   className="mt-6 w-full rounded-xl bg-slate-950 px-5 py-3.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-40"
                 >
@@ -398,13 +538,22 @@ function PublicPaymentPageContent() {
                       <div className="flex justify-between gap-4">
                         <span className="text-slate-500">You pay</span>
                         <span className="font-semibold">
-                          {quote.quote?.amountIn || "—"} {selectedToken?.symbol}
+                          {quote.quote?.amountIn && selectedToken
+                            ? formatTokenAmount(
+                                quote.quote.amountIn,
+                                selectedToken.decimals,
+                                8
+                              )
+                            : "—"}{" "}
+                          {selectedToken?.symbol}
                         </span>
                       </div>
                       <div className="flex justify-between gap-4">
                         <span className="text-slate-500">Freelancer receives</span>
                         <span className="font-semibold">
-                          {quote.quote?.amountOut || "—"} USDC
+                          {quote.quote?.amountOut
+                            ? formatTokenAmount(quote.quote.amountOut, 6, 6)
+                            : "—"} USDC
                         </span>
                       </div>
                     </div>
@@ -431,25 +580,30 @@ function PublicPaymentPageContent() {
                     <StatusBadge status={paymentStatus} />
                   </div>
                   <p className="mt-2 text-sm leading-6 text-amber-800">
-                    Send the quoted amount of your selected token to the address below using the correct source network.
+                    {isDirectAttempt
+                      ? "Send the exact USDC amount directly to the freelancer's NEAR account using the NEAR network."
+                      : "Send the quoted amount of your selected token to the deposit address using the correct source network."}
                   </p>
                 </div>
 
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                    Deposit address
+                    {isDirectAttempt ? "Freelancer's NEAR account" : "Deposit address"}
                   </p>
                   <div className="mt-2 break-all rounded-xl border border-slate-200 bg-slate-50 p-4 font-mono text-sm">
-                    {attempt.deposit_address}
+                    {paymentRecipient}
                   </div>
                   <button
-                    onClick={() =>
-                      navigator.clipboard.writeText(attempt.deposit_address)
-                    }
+                    onClick={() =>navigator.clipboard.writeText(paymentRecipient)}
                     className="mt-2 text-xs font-semibold text-slate-600 hover:text-slate-950"
                   >
                     Copy address
                   </button>
+                  {isDirectAttempt && (
+                    <p className="mt-2 break-all text-xs text-slate-400">
+                      USDC contract: {attempt.destination_asset.replace("nep141:", "")}
+                    </p>
+                  )}
                 </div>
 
                 {attempt.deposit_memo && (
@@ -464,9 +618,16 @@ function PublicPaymentPageContent() {
                 )}
 
                 <div className="rounded-xl bg-slate-50 p-4">
-                  <p className="text-xs text-slate-400">Expected deposit amount</p>
+                  <p className="text-xs text-slate-400">Expected payment amount</p>
                   <p className="mt-1 text-xl font-bold">
-                    {attempt.quote.quote?.amountIn || attempt.expected_amount}
+                    {attempt.quote.quote?.amountIn && selectedToken
+                      ? formatTokenAmount(
+                          attempt.quote.quote.amountIn,
+                          selectedToken.decimals,
+                          8
+                        )
+                      : attempt.expected_amount}{" "}
+                    {selectedToken?.symbol}
                   </p>
                   <p className="mt-1 break-all text-xs text-slate-400">
                     {attempt.quote.quoteRequest?.originAsset}
