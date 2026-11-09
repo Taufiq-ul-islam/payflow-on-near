@@ -43,3 +43,13 @@ class Invoice(Base):
         "PaymentAttempt",
         back_populates="invoice"
     )
+
+    paid_payment_attempt_id = Column(
+        UUID(as_uuid=True),
+        nullable=True,
+    )
+
+    paid_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+    )

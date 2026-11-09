@@ -143,17 +143,12 @@ def create_direct_payment(
     if existing:
         if existing.invoice_id != invoice_id:
             raise HTTPException(
-                409,
-                "Idempotency key was already used for another invoice",
+                409, "Idempotency key was already used for another invoice",
             )
 
-        if (
-            (existing.quote_response or {}).get("payment_mode")
-            != "DIRECT_NEAR"
-        ):
+        if ((existing.quote_response or {}).get("payment_mode") != "DIRECT_NEAR"):
             raise HTTPException(
-                409,
-                "Idempotency key belongs to a different payment method",
+                409, "Idempotency key belongs to a different payment method",
             )
 
         return {
@@ -183,8 +178,7 @@ def create_direct_payment(
     if not settings.usdc_asset_id.startswith("nep141:"):
         db.rollback()
         raise HTTPException(
-            400,
-            "Direct payment requires a NEAR NEP-141 USDC asset",
+            400, "Direct payment requires a NEAR NEP-141 USDC asset",
         )
 
     if invoice.due_date:
@@ -209,8 +203,7 @@ def create_direct_payment(
     if active_attempt:
         db.rollback()
         raise HTTPException(
-            409,
-            "An active payment attempt already exists",
+            409, "An active payment attempt already exists",
         )
 
     try:
