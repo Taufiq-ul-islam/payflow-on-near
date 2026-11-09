@@ -12,6 +12,8 @@ from app.schemas.payment import DepositSubmitRequest
 from app.services.payment_service import create_payment_quote, convert_usdc_to_units
 from app.services.reconciliation import reconcile_payment, reconcile_direct_near_payment, NearRPCError
 from app.core.config import settings
+from app.models.user import User
+from app.api.auth import current_user
 
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
@@ -38,11 +40,10 @@ def serialize_attempt(attempt):
     }
 
 
-
 @router.get("/")
 def list_payment_attempts(
-    freelancer_id: str = Query(..., min_length=1),
     db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     attempts = (
         db.query(PaymentAttempt)
@@ -51,7 +52,7 @@ def list_payment_attempts(
             joinedload(PaymentAttempt.invoice),
             selectinload(PaymentAttempt.transactions),
         )
-        .filter(Invoice.freelancer_id == freelancer_id)
+        .filter(Invoice.freelancer_id == user.near_account_id)
         .order_by(PaymentAttempt.created_at.desc())
         .all()
     )

@@ -12,10 +12,10 @@ class User(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    email = Column(String(200), unique=True, nullable=False, index=True)
-    password_hash = Column(String(255), nullable=False)
+    email = Column(String(200), unique=True, nullable=True, index=True)
+    password_hash = Column(String(255), nullable=True)
 
-    near_account_id = Column(String(128), unique=True, nullable=True)
+    near_account_id = Column(String(128), unique=True, nullable=True, index=True)
 
     is_active = Column(Boolean, default=True, nullable=False)
 

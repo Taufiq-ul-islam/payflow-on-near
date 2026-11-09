@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import { apiRequest, DEMO_FREELANCER_ID } from "@/lib/api";
+import { apiRequest } from "@/lib/api";
 import { formatDateTime, shortAddress, formatTokenAmount } from "@/lib/format";
 import type { PaymentAttempt } from "@/lib/types";
 import StatusBadge from "@/components/ui/status-badge";
@@ -18,13 +18,7 @@ export default function PaymentsPage() {
       setLoading(true);
       setError("");
 
-      const params = new URLSearchParams({
-        freelancer_id: DEMO_FREELANCER_ID,
-      });
-
-      const result = await apiRequest<PaymentAttempt[]>(
-        `/payments/?${params.toString()}`
-      );
+      const result = await apiRequest<PaymentAttempt[]>("/payments/");
 
       setPayments(Array.isArray(result) ? result : []);
     } catch (err) {

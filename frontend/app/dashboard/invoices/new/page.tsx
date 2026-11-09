@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
-import { apiRequest, DEMO_FREELANCER_ID } from "@/lib/api";
+import { apiRequest } from "@/lib/api";
 import { formatCurrency } from "@/lib/format";
 import type { Client } from "@/lib/types";
 
@@ -39,13 +39,7 @@ export default function NewInvoicePage() {
         setClientsLoading(true);
         setClientLoadError("");
 
-        const params = new URLSearchParams({
-          freelancer_id: DEMO_FREELANCER_ID,
-        });
-
-        const result = await apiRequest<Client[]>(
-          `/clients/?${params.toString()}`
-        );
+        const result = await apiRequest<Client[]>("/clients/");
 
         setClients(Array.isArray(result) ? result : []);
       } catch (err) {
@@ -149,7 +143,6 @@ export default function NewInvoicePage() {
       const result = await apiRequest<{ id: string }>("/invoices/", {
         method: "POST",
         body: JSON.stringify({
-          freelancer_id: DEMO_FREELANCER_ID,
           client_name: clientName.trim(),
           client_email: clientEmail.trim(),
           due_date: dueDate ? `${dueDate}T23:59:59Z` : null,

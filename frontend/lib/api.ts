@@ -1,5 +1,4 @@
-const API_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 
 export async function apiRequest<T = any>(
   endpoint: string,
@@ -7,6 +6,7 @@ export async function apiRequest<T = any>(
 ): Promise<T> {
   const response = await fetch(`${API_URL}${endpoint}`, {
     ...options,
+    credentials: "include",
     headers: {
       ...(options.body instanceof FormData
         ? {}
@@ -36,8 +36,13 @@ export async function apiRequest<T = any>(
   return response.json() as Promise<T>;
 }
 
-export async function downloadCsv(endpoint: string, filename: string) {
+
+export async function downloadCsv(
+  endpoint: string,
+  filename: string
+) {
   const response = await fetch(`${API_URL}${endpoint}`, {
+    credentials: "include",
     cache: "no-store",
   });
 
@@ -51,12 +56,10 @@ export async function downloadCsv(endpoint: string, filename: string) {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = filename;
+
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
 
   URL.revokeObjectURL(url);
 }
-
-export const DEMO_FREELANCER_ID =
-  process.env.NEXT_PUBLIC_FREELANCER_ID || "YOUR_NEAR_ACCOUNT.testnet";

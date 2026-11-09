@@ -22,7 +22,7 @@ export default function InvoiceDetailsPage() {
     async function load() {
       try {
         const result = await apiRequest<Invoice>(
-          `/invoices/${invoiceId}`
+          `/invoices/${invoiceId}/manage`
         );
         setInvoice(result);
       } catch (err) {
