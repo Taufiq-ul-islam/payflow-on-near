@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from redis_fastapi import FastAPIRedis
 
 # Import every model before create_all.
 from app.models.user import User
@@ -8,11 +9,12 @@ from app.models.client import Client
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.payment import PaymentAttempt, Transaction
+from app.models.refund import Refund, RefundTransaction
 
 from app.core.config import settings
 from app.core.database import Base, engine
 
-from app.api import auth, invoices, payments, reports, clients, relayer
+from app.api import auth, invoices, payments, reports, clients, relayer, refunds
 
 Base.metadata.create_all(bind=engine)
 
@@ -20,6 +22,10 @@ app = FastAPI(
     title="PayFlow API",
     description="Cross-chain invoicing with USDC settlement on NEAR",
     version="1.0.0",
+)
+
+FastAPIRedis(app).lifespan().rate_limiting(
+    global_rate="300/minute",
 )
 
 app.add_middleware(
@@ -36,6 +42,7 @@ app.include_router(payments.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(clients.router, prefix="/api")
 app.include_router(relayer.router, prefix="/api")
+app.include_router(refunds.router, prefix="/api")
 
 
 @app.get("/")

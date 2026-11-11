@@ -8,10 +8,13 @@ class Settings(BaseSettings):
     near_intents_api_key: str = ""
 
     near_network: str = "testnet"
-    near_rpc_url: str
+    near_rpc_url: str = "https://rpc.testnet.near.org"
 
     payflow_contract_id: str
     payflow_contract_admin_id: str = ""
+
+    payflow_admin_function_call_public_key: str = ""
+    payflow_admin_function_call_private_key: str = ""
 
     relayer_url: str = ""
     relayer_api_key: str = ""

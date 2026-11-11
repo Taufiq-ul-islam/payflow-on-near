@@ -48,9 +48,32 @@ impl PayFlow {
             "Unauthorized caller"
         );
 
-        assert!(!invoice_id.is_empty(), "Invalid invoice ID");
-        assert!(!amount.is_empty(), "Invalid amount");
-        assert!(!settlement_reference.is_empty(), "Invalid reference");
+        assert!(
+            !invoice_id.trim().is_empty(),
+            "Invalid invoice ID"
+        );
+
+        assert!(
+            !amount.is_empty() && amount.bytes().all(|b| b.is_ascii_digit()),
+            "Amount must contain only digits"
+        );
+
+        let amount_units = amount.parse::<u128>().unwrap_or(0);
+
+        assert!(
+            amount_units > 0,
+            "Amount must be greater than zero"
+        );
+
+        assert!(
+            !token.trim().is_empty(),
+            "Invalid token"
+        );
+
+        assert!(
+            !settlement_reference.trim().is_empty(),
+            "Invalid reference"
+        );
 
         assert!(
             self.settlements.get(&invoice_id).is_none(),
@@ -74,5 +97,25 @@ impl PayFlow {
         invoice_id: String,
     ) -> Option<Settlement> {
         self.settlements.get(&invoice_id)
+    }
+
+    pub fn get_admin(&self) -> AccountId {
+        self.admin.clone()
+    }
+
+    pub fn update_admin(&mut self, new_admin: AccountId) {
+        assert_eq!(
+            env::predecessor_account_id(),
+            self.admin,
+            "Unauthorized caller"
+        );
+
+        assert_ne!(
+            new_admin,
+            self.admin,
+            "New admin must be different from current admin"
+        );
+
+        self.admin = new_admin;
     }
 }

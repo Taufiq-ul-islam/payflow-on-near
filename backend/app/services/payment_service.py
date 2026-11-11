@@ -91,10 +91,4 @@ async def create_payment_quote(
         dry=dry,
     )
 
-    print("USDC decimals:", settings.usdc_decimals)
-    print("Invoice total:", invoice.total)
-    print("USDC units:", convert_usdc_to_units(invoice.total))
-    print("Source asset:", source_asset)
-    print("Destination asset:", settings.usdc_asset_id)
-
     return await near_intents.get_quote(payload)

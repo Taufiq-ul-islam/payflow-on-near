@@ -1,7 +1,8 @@
 import secrets
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
+from redis_fastapi import rate_limit
 
 from app.core.config import settings
 from app.integrations.near_relayer import near_relayer, NearRelayerError
@@ -86,7 +87,7 @@ def validate_delegate_action(delegate_action: dict):
         )
 
 
-@router.post("/submit")
+@router.post("/submit", dependencies=[Depends(rate_limit("5/minute"))])
 async def submit_delegate_action(
     data: SignedDelegateActionRequest,
     internal_api_key: str | None = Header(
