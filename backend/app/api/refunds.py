@@ -179,18 +179,13 @@ async def request_refund_quote(
             tokens = None
 
         if not isinstance(tokens, list):
-            raise HTTPException(
-                502,
-                "Unexpected Tidepool token registry response.",
-            )
+            raise HTTPException(502, "Unexpected Tidepool token registry response.")
 
         destination_token = next(
             (
-                token
-                for token in tokens
+                token for token in tokens
                 if isinstance(token, dict)
-                and str(token.get("blockchain") or "").lower()
-                    == destination_network
+                and str(token.get("blockchain") or "").lower() == destination_network
                 and str(token.get("symbol") or "").upper() == "USDC"
             ),
             None,
@@ -208,18 +203,12 @@ async def request_refund_quote(
         )
 
         if not destination_asset or destination_decimals < 0:
-            raise HTTPException(
-                502,
-                "Tidepool returned an invalid USDC token entry.",
-            )
+            raise HTTPException(502, "Tidepool returned an invalid USDC token entry.")
 
     except NearIntentsError as exc:
         raise HTTPException(502, str(exc))
     except (TypeError, ValueError, AttributeError):
-        raise HTTPException(
-            502,
-            "Could not parse Tidepool's USDC token registry entry.",
-        )
+        raise HTTPException(502, "Could not parse Tidepool's USDC token registry entry.")
 
 
     # PaymentAttempt.received_amount is stored in USDC base units.
@@ -284,11 +273,18 @@ async def request_refund_quote(
             detail="The quote does not cover the entire refundable balance.",
         )
 
-    quote_response = result.get("quote_response")
-    quote = {}
+    quote_response = result.get("quote_response") or {}
+    quote = quote_response.get("quote") or {}
 
-    if quote_response:
-        quote = quote_response.get("quote", quote_response)
+    provider_correlation_id = quote_response.get("correlationId")
+    quote_signature = quote_response.get("signature")
+
+    if destination_network != "near":
+        if not quote_signature or not provider_correlation_id:
+            raise HTTPException(
+                status_code=502,
+                detail="Tidepool quote is missing its signature or correlation ID.",
+            )
 
     refund = Refund(
         id=uuid4(),
@@ -301,8 +297,9 @@ async def request_refund_quote(
         source_asset=settings.usdc_asset_id,
         source_amount=source_amount,
         expected_amount=expected_amount,
-        quote_id=quote.get("quoteId") or quote.get("id"),
-        quote_signature=quote.get("signature"),
+        quote_id=provider_correlation_id,
+        quote_signature=quote_signature,
+        provider_correlation_id=provider_correlation_id,
         quote_response=quote_response,
         fee_details=result.get("fee_details"),
         deposit_address=quote.get("depositAddress"),
@@ -324,6 +321,7 @@ async def request_refund_quote(
         )
 
     return serialize_refund(refund)
+
 
 
 @router.post("/{refund_id}/approve", dependencies=[Depends(rate_limit("10/minute"))])
@@ -350,8 +348,7 @@ def approve_refund(
             detail="Refund is no longer eligible for approval.",
         )
 
-    # A PENDING refund may be retried only if no wallet transfer
-    # has been recorded for it.
+    # A PENDING refund can only be retried if no transfer was recorded.
     if refund.status == "PENDING":
         existing_transaction = (
             db.query(RefundTransaction)
@@ -362,96 +359,76 @@ def approve_refund(
         if existing_transaction:
             raise HTTPException(
                 status_code=409,
-                detail="A refund transfer has already been recorded. Reconcile it instead of sending another transfer.",
+                detail=(
+                    "A refund transfer has already been recorded. "
+                    "Reconcile it instead of sending another transfer."
+                ),
             )
 
-    # REMOVED: This does not work. Kept for record-keeping.
-    # REMOVED: Quote validation is now performed during approval, not during quote request.
-    # Validate the quote before returning or issuing transfer instructions.
-    # if refund.destination_network != "near":
-    #     quote_deadline = (
-    #         refund.quote_response.get("quoteRequest", {}).get("deadline")
-    #         if isinstance(refund.quote_response, dict)
-    #         else None
-    #     )
-
-    #     if quote_deadline:
-    #         try:
-    #             deadline = datetime.fromtimestamp(
-    #                 int(quote_deadline),
-    #                 tz=timezone.utc,
-    #             )
-    #         except (TypeError, ValueError, OverflowError):
-    #             raise HTTPException(
-    #                 status_code=409,
-    #                 detail="Refund quote deadline is invalid. Create a new refund quote.",
-    #             )
-
-    #         if deadline <= datetime.now(timezone.utc):
-    #             refund.status = "REVIEW"
-    #             db.commit()
-
-    #             raise HTTPException(
-    #                 status_code=409,
-    #                 detail="Refund quote has expired. Create a new refund quote.",
-    #             )
-
-    # Only transition and timestamp the first approval.
-    if refund.status == "AWAITING_APPROVAL":
-        refund.status = "PENDING"
-        refund.approved_at = datetime.now(timezone.utc)
-        db.commit()
-
-    # Cross-chain quotes must still be valid when approved.
+    # Validate cross-chain quote BEFORE changing the refund status.
     if refund.destination_network != "near":
         quote_response = refund.quote_response or {}
-        quote = quote_response.get("quote", quote_response)
 
-        quote_request = (
-            quote_response.get("quoteRequest")
-            or quote.get("quoteRequest")
-            or {}
-        )
+        if not isinstance(quote_response, dict):
+            refund.status = "FAILED"
+            db.commit()
+            raise HTTPException(
+                status_code=409,
+                detail="Refund quote data is invalid. Request a new quote.",
+            )
 
+        quote = quote_response.get("quote") or quote_response
+
+        # refund_service stores quoteRequest at the top level.
+        quote_request = quote_response.get("quoteRequest") or {}
         deadline = quote_request.get("deadline")
 
         if not deadline:
+            refund.status = "FAILED"
+            db.commit()
             raise HTTPException(
                 status_code=409,
-                detail="Refund quote has no recorded deadline.",
+                detail="Refund quote has no recorded deadline. Request a new quote.",
             )
 
         try:
             expires_at = datetime.fromisoformat(
                 deadline.replace("Z", "+00:00")
             )
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
+            refund.status = "FAILED"
+            db.commit()
             raise HTTPException(
                 status_code=409,
-                detail="Refund quote has an invalid deadline.",
+                detail="Refund quote has an invalid deadline. Request a new quote.",
             )
 
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
 
         if expires_at <= datetime.now(timezone.utc):
-            refund.status = "REVIEW"
+            refund.status = "FAILED"
             db.commit()
-
             raise HTTPException(
                 status_code=409,
                 detail="Refund quote expired. Request a new quote.",
             )
 
-    refund.status = "PENDING"
-    refund.approved_at = datetime.now(timezone.utc)
+    # Only after validation succeeds do we approve the refund.
+    if refund.status == "AWAITING_APPROVAL":
+        refund.approved_at = datetime.now(timezone.utc)
 
+    refund.status = "PENDING"
     db.commit()
 
     return {
         "refund_id": str(refund.id),
         "status": refund.status,
-        "payment_mode": ("DIRECT_NEAR_USDC" if refund.destination_network == "near" else "CROSS_CHAIN"),
+        "payment_mode": (
+            "DIRECT_NEAR_REFUND"
+            if refund.destination_network == "near"
+            else "CROSS_CHAIN"
+        ),
         "source_asset": refund.source_asset,
         "destination_network": refund.destination_network,
         "destination_asset": refund.destination_asset,

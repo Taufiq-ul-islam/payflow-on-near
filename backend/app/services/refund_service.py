@@ -215,6 +215,7 @@ async def create_refund_quote(
     }
 
 
+
 async def verify_refund_transfer(
     refund,
     tx_hash: str,
@@ -230,7 +231,6 @@ async def verify_refund_transfer(
 
     transaction = result.get("transaction", {})
 
-    # Verify transaction identity and execution.
     if transaction.get("hash") != tx_hash:
         raise ValueError("Transaction hash mismatch.")
 
@@ -243,7 +243,6 @@ async def verify_refund_transfer(
     if "Failure" in result.get("status", {}):
         raise ValueError("NEAR transaction failed.")
 
-    # Derive the NEAR USDC contract from the configured asset ID.
     asset_parts = settings.usdc_asset_id.split(":", 1)
 
     if len(asset_parts) != 2 or asset_parts[0] != "nep141":
@@ -258,15 +257,31 @@ async def verify_refund_transfer(
 
     actions = transaction.get("actions", [])
 
-    if len(actions) != 1 or "FunctionCall" not in actions[0]:
+    # Wallets may bundle storage_deposit and ft_transfer.
+    # Require exactly one ft_transfer, while allowing storage_deposit.
+    transfer_calls = []
+
+    for action in actions:
+        function_call = action.get("FunctionCall")
+
+        if not function_call:
+            continue
+
+        method_name = function_call.get("method_name")
+
+        if method_name == "ft_transfer":
+            transfer_calls.append(function_call)
+        elif method_name != "storage_deposit":
+            raise ValueError(
+                f"Unexpected function call in refund transaction: {method_name}"
+            )
+
+    if len(transfer_calls) != 1:
         raise ValueError(
-            "Expected exactly one NEP-141 function call."
+            "Expected exactly one NEP-141 ft_transfer call."
         )
 
-    function_call = actions[0]["FunctionCall"]
-
-    if function_call.get("method_name") != "ft_transfer":
-        raise ValueError("Transaction is not an ft_transfer.")
+    function_call = transfer_calls[0]
 
     try:
         args = json.loads(
@@ -296,7 +311,6 @@ async def verify_refund_transfer(
     if str(args.get("amount")) != expected_amount:
         raise ValueError("NEP-141 transfer amount mismatch.")
 
-    # Confirm the actual NEP-141 transfer event.
     matching_events = []
 
     for receipt in result.get("receipts_outcome", []):
@@ -333,9 +347,9 @@ async def verify_refund_transfer(
                 ):
                     matching_events.append(item)
 
-    if not matching_events:
+    if len(matching_events) != 1:
         raise ValueError(
-            "Matching NEP-141 transfer event was not found."
+            "Expected exactly one matching NEP-141 transfer event."
         )
 
     return {

@@ -280,6 +280,13 @@ async def reconcile_payment(
                 db.commit()
                 db.refresh(attempt)
 
+        # Repair invoices whose payment attempt is SUCCESS
+        # but whose canonical invoice settlement was not persisted.
+        if attempt.status == "SUCCESS":
+            mark_invoice_settled(db, invoice, attempt)
+            db.commit()
+            db.refresh(invoice)
+        
         response = {
             "payment_attempt_id": str(attempt.id),
             "invoice_id": str(invoice.id),

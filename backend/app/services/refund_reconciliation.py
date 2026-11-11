@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
-
+from uuid import uuid4
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -200,7 +200,7 @@ async def reconcile_cross_chain_refund(
     status_quote_details = status_quote.get("quote") or {}
     status_request = status_quote.get("quoteRequest") or {}
 
-    original_request = original_quote.get("quoteRequest") or {}
+    original_request = original_response.get("quoteRequest") or {}
 
     # Validate correlation ID against both original and status quotes.
     correlation_id = status_data.get("correlationId")
@@ -336,7 +336,7 @@ async def reconcile_cross_chain_refund(
             tx for tx in destination_transactions
             if isinstance(tx, dict)
             and isinstance(tx.get("hash"), str)
-            and tx["hash"].startswith("0x")
+            and tx["hash"].strip()
         ),
         None,
     )
@@ -346,7 +346,7 @@ async def reconcile_cross_chain_refund(
             refund,
             db,
             status_data,
-            "Missing Base destination payout transaction.",
+            "Missing destination payout transaction.",
         )
 
     if not isinstance(primary_transaction, dict):
@@ -378,6 +378,7 @@ async def reconcile_cross_chain_refund(
     else:
         db.add(
             RefundTransaction(
+                id=uuid4(),
                 refund_id=refund.id,
                 chain=refund.destination_network.upper(),
                 tx_hash=tx_hash,
