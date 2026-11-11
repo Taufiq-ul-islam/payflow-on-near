@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     near_intents_api_key: str = ""
 
     near_network: str = "testnet"
-    near_rpc_url: str
+    near_rpc_url: str = "https://rpc.testnet.near.org"
 
     payflow_contract_id: str
     payflow_contract_admin_id: str = ""

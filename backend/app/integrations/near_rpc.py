@@ -8,7 +8,7 @@ class NearRpcError(Exception):
 
 class NearRpc:
     def __init__(self):
-        self.rpc_url = "https://rpc.testnet.near.org"
+        self.rpc_url = settings.near_rpc_url
         self.timeout = httpx.Timeout(30.0)
 
     async def get_transaction(

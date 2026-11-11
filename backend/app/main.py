@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from redis_fastapi import FastAPIRedis
 
 # Import every model before create_all.
 from app.models.user import User
@@ -21,6 +22,10 @@ app = FastAPI(
     title="PayFlow API",
     description="Cross-chain invoicing with USDC settlement on NEAR",
     version="1.0.0",
+)
+
+FastAPIRedis(app).lifespan().rate_limiting(
+    global_rate="300/minute",
 )
 
 app.add_middleware(

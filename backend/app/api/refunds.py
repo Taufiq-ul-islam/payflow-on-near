@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
+from redis_fastapi import rate_limit
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -68,6 +69,7 @@ def parse_refund_id(refund_id: str) -> UUID:
 @router.post(
     "/quote/{payment_attempt_id}",
     response_model=RefundResponse,
+    dependencies=[Depends(rate_limit("5/minute"))],
 )
 async def request_refund_quote(
     payment_attempt_id: str,
@@ -324,7 +326,7 @@ async def request_refund_quote(
     return serialize_refund(refund)
 
 
-@router.post("/{refund_id}/approve")
+@router.post("/{refund_id}/approve", dependencies=[Depends(rate_limit("10/minute"))])
 def approve_refund(
     refund_id: str,
     db: Session = Depends(get_db),
@@ -464,7 +466,7 @@ def approve_refund(
 
 
 
-@router.post("/{refund_id}/deposit-submit")
+@router.post("/{refund_id}/deposit-submit", dependencies=[Depends(rate_limit("10/minute"))])
 async def submit_refund_deposit(
     refund_id: str,
     payload: RefundDepositSubmitRequest,
@@ -741,7 +743,7 @@ async def submit_refund_deposit(
     }
 
 
-@router.post("/{refund_id}/reconcile")
+@router.post("/{refund_id}/reconcile", dependencies=[Depends(rate_limit("20/minute"))])
 async def reconcile_refund(
     refund_id: str,
     db: Session = Depends(get_db),

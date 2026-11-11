@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from redis_fastapi import rate_limit
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -46,7 +47,7 @@ def current_user(
     return user
 
 
-@router.post("/challenge")
+@router.post("/challenge", dependencies=[Depends(rate_limit("5/minute"))])
 def issue_challenge(
     data: ChallengeRequest,
     db: Session = Depends(get_db),
@@ -57,7 +58,7 @@ def issue_challenge(
         raise HTTPException(400, str(exc))
 
 
-@router.post("/verify")
+@router.post("/verify", dependencies=[Depends(rate_limit("5/minute"))])
 async def verify_wallet(
     data: VerifyRequest,
     response: Response,

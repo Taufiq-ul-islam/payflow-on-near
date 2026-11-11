@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload, selectinload
+from redis_fastapi import rate_limit
 
 from app.core.database import get_db
 from app.integrations.near_intents import near_intents, NearIntentsError
@@ -93,7 +94,7 @@ def list_payment_attempts(
     ]
 
 
-@router.get("/tokens")
+@router.get("/tokens", dependencies=[Depends(rate_limit("30/minute"))])
 async def supported_tokens():
     try:
         return await near_intents.get_tokens()
@@ -101,7 +102,7 @@ async def supported_tokens():
         raise HTTPException(502, str(exc))
 
 
-@router.post("/quote/{invoice_id}")
+@router.post("/quote/{invoice_id}", dependencies=[Depends(rate_limit("10/minute"))])
 async def request_quote(
     invoice_id: UUID,
     source_asset: str,
@@ -126,7 +127,7 @@ async def request_quote(
         raise HTTPException(502, str(exc))
 
 
-@router.post("/direct/{invoice_id}")
+@router.post("/direct/{invoice_id}", dependencies=[Depends(rate_limit("5/minute"))])
 def create_direct_payment(
     invoice_id: UUID,
     idempotency_key: str = Header(
@@ -251,7 +252,7 @@ def create_direct_payment(
         raise HTTPException(400, str(exc))
 
 
-@router.post("/commit/{invoice_id}")
+@router.post("/commit/{invoice_id}", dependencies=[Depends(rate_limit("5/minute"))])
 async def commit_payment(
     invoice_id: UUID,
     source_asset: str,
@@ -372,7 +373,7 @@ async def commit_payment(
 
 
 
-@router.post("/{attempt_id}/deposit-submit")
+@router.post("/{attempt_id}/deposit-submit", dependencies=[Depends(rate_limit("10/minute"))])
 async def submit_deposit(
     attempt_id: UUID,
     data: DepositSubmitRequest,
@@ -581,7 +582,7 @@ async def submit_deposit(
         raise HTTPException(502, str(exc))
 
 
-@router.get("/{attempt_id}/status")
+@router.get("/{attempt_id}/status", dependencies=[Depends(rate_limit("30/minute"))])
 async def payment_status(
     attempt_id: UUID,
     db: Session = Depends(get_db),
