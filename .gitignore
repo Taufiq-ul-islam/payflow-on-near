@@ -93,3 +93,9 @@ playwright-report/
 *.zip
 *.tar
 *.gz
+
+# Local Pagoda relayer clone (separate repository)
+/pagoda-relayer-rs/
+
+# Temp files for testing and pagoda relayer
+backend/test_delegate_signing.py

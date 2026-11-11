@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     payflow_contract_id: str
     payflow_contract_admin_id: str = ""
 
+    payflow_admin_function_call_public_key: str = ""
+    payflow_admin_function_call_private_key: str = ""
+
     relayer_url: str = ""
     relayer_api_key: str = ""
     relayer_max_gas: int = 100_000_000_000_000
