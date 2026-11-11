@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import { apiRequest, DEMO_FREELANCER_ID } from "@/lib/api";
+import { apiRequest } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { Invoice } from "@/lib/types";
 import StatusBadge from "@/components/ui/status-badge";
@@ -16,13 +16,7 @@ export default function DashboardPage() {
   useEffect(() => {
     async function load() {
       try {
-        const params = new URLSearchParams({
-          freelancer_id: DEMO_FREELANCER_ID,
-        });
-
-        const result = await apiRequest<Invoice[]>(
-          `/invoices/?${params.toString()}`
-        );
+        const result = await apiRequest<Invoice[]>("/invoices/");
 
         setInvoices(Array.isArray(result) ? result : []);
       } catch (err) {

@@ -1,83 +1,95 @@
 # ==========================================
-# FRONTEND — Next.js / Node.js
+# Environment variables and secrets
 # ==========================================
-
-frontend/node_modules/
-frontend/.next/
-frontend/out/
-frontend/build/
-frontend/dist/
-frontend/coverage/
-frontend/.turbo/
-frontend/.vercel/
-
-# Frontend environment variables / secrets
-frontend/.env
-frontend/.env.*
-!frontend/.env.example
-!frontend/.env.*.example
-
-# ==========================================
-# BACKEND — Python / FastAPI
-# ==========================================
-
-backend/__pycache__/
-backend/**/*.py[cod]
-backend/*.py[cod]
-
-# Virtual environments
-backend/venv/
-backend/.venv/
-backend/env/
-backend/.virtualenv/
-
-# Python packaging
-backend/build/
-backend/dist/
-backend/*.egg-info/
-backend/.pytest_cache/
-backend/.mypy_cache/
-backend/.ruff_cache/
-backend/.coverage
-backend/htmlcov/
-
-# Backend environment variables / secrets
-backend/.env
-backend/.env.*
-!backend/.env.example
-!backend/.env.*.example
-
-# Logs and local databases
-backend/*.log
-backend/*.sqlite
-backend/*.sqlite3
-backend/*.db
-
-# ==========================================
-# GENERAL — OS / EDITORS
-# ==========================================
-
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-.vscode/
-.idea/
-
-*.log
-*.tmp
-*.swp
-*.bak
-
-# ==========================================
-# LOCAL SECRETS — root
-# ==========================================
-
 .env
 .env.*
 !.env.example
-!.env.*.example
+!.env.local.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
 
-# ===========================================
+# ==========================================
+# Python / FastAPI backend
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
 
+# ==========================================
+# Next.js / Node frontend
+# ==========================================
+node_modules/
+.next/
+out/
+dist/
+build/
+.turbo/
+.vercel/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ==========================================
+# Rust / NEAR smart contracts
+# ==========================================
+target/
+Cargo.lock
+*.wasm
+*.contract
+*.log
+
+# ==========================================
+# IDEs and editors
+# ==========================================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# Database / local development
+# ==========================================
+*.sqlite
+*.sqlite3
+*.db
+postgres-data/
+pgdata/
+
+# ==========================================
+# Testing and coverage
+# ==========================================
+coverage/
+.nyc_output/
+test-results/
+playwright-report/
+
+# ==========================================
+# Temporary files
+# ==========================================
+*.tmp
+*.temp
+*.bak
+*.old
 *.zip
+*.tar
+*.gz

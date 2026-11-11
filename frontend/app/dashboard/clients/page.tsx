@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { apiRequest, DEMO_FREELANCER_ID } from "@/lib/api";
+import { apiRequest } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import type { Client } from "@/lib/types";
 
@@ -21,13 +21,7 @@ export default function ClientsPage() {
       setLoading(true);
       setError("");
 
-      const params = new URLSearchParams({
-        freelancer_id: DEMO_FREELANCER_ID,
-      });
-
-      const result = await apiRequest<Client[]>(
-        `/clients/?${params.toString()}`
-      );
+      const result = await apiRequest<Client[]>("/clients/");
 
       setClients(Array.isArray(result) ? result : []);
     } catch (err) {
@@ -48,12 +42,7 @@ export default function ClientsPage() {
       setSaving(true);
       setError("");
 
-      const params = new URLSearchParams({
-        freelancer_id: DEMO_FREELANCER_ID,
-      });
-
-      const createdClient = await apiRequest<Client>(
-        `/clients/?${params.toString()}`,
+      const createdClient = await apiRequest<Client>("/clients/",
         {
           method: "POST",
           body: JSON.stringify({
@@ -94,14 +83,7 @@ export default function ClientsPage() {
     if (!window.confirm("Delete this saved client?")) return;
 
     try {
-      const params = new URLSearchParams({
-        freelancer_id: DEMO_FREELANCER_ID,
-      });
-
-      await apiRequest(
-        `/clients/${clientId}?${params.toString()}`,
-        { method: "DELETE" }
-      );
+      await apiRequest(`/clients/${clientId}`, { method: "DELETE" });
 
       setClients((previous) =>
         previous.filter((client) => client.id !== clientId)

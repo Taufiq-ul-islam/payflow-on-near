@@ -1,9 +1,9 @@
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import every model before create_all.
 from app.models.user import User
+from app.models.auth import AuthChallenge, UserSession
 from app.models.client import Client
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
@@ -12,7 +12,7 @@ from app.models.payment import PaymentAttempt, Transaction
 from app.core.config import settings
 from app.core.database import Base, engine
 
-from app.api import invoices, payments, reports, clients, relayer
+from app.api import auth, invoices, payments, reports, clients, relayer
 
 Base.metadata.create_all(bind=engine)
 
@@ -30,6 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router, prefix="/api")
 app.include_router(invoices.router, prefix="/api")
 app.include_router(payments.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")

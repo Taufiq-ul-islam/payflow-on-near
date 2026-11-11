@@ -23,6 +23,10 @@ class Settings(BaseSettings):
 
     frontend_url: str = "http://localhost:3000"
 
+    # Wallet authentication
+    auth_cookie_secure: bool = False
+    auth_session_days: int = 7
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

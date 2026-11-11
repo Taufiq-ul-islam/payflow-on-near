@@ -11,7 +11,6 @@ class InvoiceItemCreate(BaseModel):
 
 
 class InvoiceCreate(BaseModel):
-    freelancer_id: str
     client_name: str
     client_email: EmailStr
     due_date: Optional[datetime] = None

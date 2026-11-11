@@ -7,7 +7,7 @@ from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 
 
-def create_invoice(db: Session, data):
+def create_invoice(db: Session, data, freelancer_id: str):
     if not data.items:
         raise ValueError("Invoice must contain at least one item")
 
@@ -30,7 +30,7 @@ def create_invoice(db: Session, data):
 
     invoice = Invoice(
         invoice_number=f"PF-{uuid.uuid4().hex[:8].upper()}",
-        freelancer_id=data.freelancer_id,
+        freelancer_id=freelancer_id,
         client_name=data.client_name,
         client_email=str(data.client_email).lower(),
         total=total,
@@ -59,5 +59,16 @@ def get_invoice(db: Session, invoice_id):
     return (
         db.query(Invoice)
         .filter(Invoice.id == invoice_id)
+        .first()
+    )
+
+
+def get_owned_invoice(db: Session, invoice_id, freelancer_id: str):
+    return (
+        db.query(Invoice)
+        .filter(
+            Invoice.id == invoice_id,
+            Invoice.freelancer_id == freelancer_id,
+        )
         .first()
     )

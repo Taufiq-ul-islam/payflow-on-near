@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState, type ReactNode } from "react";
+
+import { getCurrentUser, logout } from "@/lib/auth";
 
 const navigation = [
   {
@@ -27,10 +29,82 @@ const navigation = [
   },
 ];
 
-export default function DashboardShell({children}: {
+export default function DashboardShell({
+  children,
+}: {
   children: ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
+
+  const [accountId, setAccountId] = useState("");
+  const [checkingAuth, setCheckingAuth] = useState(true);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+
+    async function checkSession() {
+      try {
+        const user = await getCurrentUser();
+
+        if (active) {
+          setAccountId(user.account_id);
+        }
+      } catch {
+        if (active) {
+          router.replace("/login");
+        }
+      } finally {
+        if (active) {
+          setCheckingAuth(false);
+        }
+      }
+    }
+
+    checkSession();
+
+    return () => {
+      active = false;
+    };
+  }, [router]);
+
+  async function handleLogout() {
+    setLoggingOut(true);
+    setError("");
+
+    try {
+      await logout();
+      router.replace("/login");
+      router.refresh();
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Logout failed. Please try again."
+      );
+      setLoggingOut(false);
+    }
+  }
+
+  if (checkingAuth || !accountId) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#f7f8fa]">
+        <div className="text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-slate-200 border-t-slate-900" />
+          <p className="mt-4 text-sm text-slate-500">
+            Verifying your session...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const shortAccountId =
+    accountId.length > 24
+      ? `${accountId.slice(0, 12)}...${accountId.slice(-8)}`
+      : accountId;
 
   return (
     <div className="min-h-screen bg-[#f7f8fa] text-slate-900">
@@ -41,7 +115,9 @@ export default function DashboardShell({children}: {
           </div>
           <div>
             <p className="text-lg font-bold tracking-tight">PayFlow</p>
-            <p className="text-xs text-slate-400">Freelance payments</p>
+            <p className="text-xs text-slate-400">
+              Freelance payments
+            </p>
           </div>
         </div>
 
@@ -100,7 +176,7 @@ export default function DashboardShell({children}: {
       </aside>
 
       <div className="lg:pl-64">
-        <header className="sticky top-0 z-20 flex h-20 items-center justify-between border-b border-slate-200 bg-white/90 px-5 backdrop-blur md:px-9">
+        <header className="sticky top-0 z-20 flex min-h-20 items-center justify-between gap-3 border-b border-slate-200 bg-white/90 px-5 py-3 backdrop-blur md:px-9">
           <div>
             <p className="text-sm font-semibold">Workspace</p>
             <p className="text-xs text-slate-400">
@@ -113,11 +189,37 @@ export default function DashboardShell({children}: {
               Testnet
             </span>
 
-            <div className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-200 text-xs font-bold text-slate-600">
+            <div
+              className="hidden max-w-48 text-right sm:block"
+              title={accountId}
+            >
+              <p className="text-xs font-semibold text-slate-700">
+                Connected wallet
+              </p>
+              <p className="truncate text-[11px] text-slate-400">
+                {shortAccountId}
+              </p>
+            </div>
+
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-200 text-xs font-bold text-slate-600">
               PF
             </div>
+
+            <button
+              onClick={handleLogout}
+              disabled={loggingOut}
+              className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 disabled:opacity-50"
+            >
+              {loggingOut ? "Signing out..." : "Logout"}
+            </button>
           </div>
         </header>
+
+        {error && (
+          <div className="border-b border-red-200 bg-red-50 px-5 py-3 text-sm text-red-700 md:px-9">
+            {error}
+          </div>
+        )}
 
         <nav className="flex gap-2 overflow-x-auto border-b border-slate-200 bg-white px-4 py-3 lg:hidden">
           {navigation.map((item) => (
@@ -126,7 +228,8 @@ export default function DashboardShell({children}: {
               href={item.href}
               className={`whitespace-nowrap rounded-lg px-3 py-2 text-xs font-semibold ${
                 pathname === item.href ||
-                (item.href !== "/dashboard" && pathname.startsWith(item.href))
+                (item.href !== "/dashboard" &&
+                  pathname.startsWith(item.href))
                   ? "bg-slate-950 text-white"
                   : "bg-slate-100 text-slate-600"
               }`}
@@ -134,6 +237,7 @@ export default function DashboardShell({children}: {
               {item.label}
             </Link>
           ))}
+
           <Link
             href="/dashboard/settings"
             className="whitespace-nowrap rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600"

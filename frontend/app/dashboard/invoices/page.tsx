@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
-import { apiRequest, DEMO_FREELANCER_ID, downloadCsv } from "@/lib/api";
+import { apiRequest, downloadCsv } from "@/lib/api";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { Invoice } from "@/lib/types";
 import StatusBadge from "@/components/ui/status-badge";
@@ -20,13 +20,7 @@ export default function InvoicesPage() {
       setLoading(true);
       setError("");
 
-      const params = new URLSearchParams({
-        freelancer_id: DEMO_FREELANCER_ID,
-      });
-
-      const result = await apiRequest<Invoice[]>(
-        `/invoices/?${params.toString()}`
-      );
+      const result = await apiRequest<Invoice[]>("/invoices/");
 
       setInvoices(Array.isArray(result) ? result : []);
     } catch (err) {
@@ -59,10 +53,7 @@ export default function InvoicesPage() {
 
   async function exportCsv() {
     try {
-      await downloadCsv(
-        `/reports/invoices/${encodeURIComponent(DEMO_FREELANCER_ID)}/csv`,
-        "payflow-invoices.csv"
-      );
+      await downloadCsv(`/reports/invoices/csv`, "payflow-invoices.csv");
     } catch (err) {
       alert(err instanceof Error ? err.message : "Export failed");
     }

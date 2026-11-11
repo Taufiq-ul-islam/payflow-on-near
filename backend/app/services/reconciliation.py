@@ -3,6 +3,7 @@ import json
 import httpx
 
 from sqlalchemy.orm import Session
+from datetime import datetime, timezone
 
 from app.integrations.near_intents import near_intents
 from app.models.invoice import Invoice
@@ -10,7 +11,56 @@ from app.models.payment import PaymentAttempt, Transaction
 from app.core.config import settings
 
 
-FINAL_STATUSES = {"SUCCESS", "REFUNDED", "FAILED"}
+FINAL_STATUSES = {"SUCCESS", "REFUNDED", "FAILED", "DUPLICATE_SETTLEMENT", "SETTLEMENT_REVIEW"}
+
+
+def mark_invoice_settled(
+    db: Session,
+    invoice: Invoice,
+    attempt: PaymentAttempt,
+) -> str:
+    """
+    Atomically claim an invoice for one verified payment attempt.
+    Returns SUCCESS, DUPLICATE_SETTLEMENT, or SETTLEMENT_REVIEW.
+    """
+
+    updated = (
+        db.query(Invoice)
+        .filter(
+            Invoice.id == invoice.id,
+            Invoice.status == "PENDING",
+            Invoice.paid_payment_attempt_id.is_(None),
+        )
+        .update(
+            {
+                Invoice.status: "PAID",
+                Invoice.paid_payment_attempt_id: attempt.id,
+                Invoice.paid_at: datetime.now(timezone.utc),
+            },
+            synchronize_session=False,
+        )
+    )
+
+    db.refresh(invoice)
+
+    if updated == 1:
+        attempt.status = "SUCCESS"
+        return "SUCCESS"
+
+    # This exact attempt may already have settled the invoice.
+    if invoice.paid_payment_attempt_id == attempt.id:
+        attempt.status = "SUCCESS"
+        return "SUCCESS"
+
+    # Another attempt already settled it. Preserve this attempt's
+    # transaction evidence, but do not overwrite the original payment.
+    if invoice.status == "PAID":
+        attempt.status = "DUPLICATE_SETTLEMENT"
+        return "DUPLICATE_SETTLEMENT"
+
+    # Payment was verified, but the invoice is no longer payable.
+    attempt.status = "SETTLEMENT_REVIEW"
+    return "SETTLEMENT_REVIEW"
 
 
 async def reconcile_payment(
@@ -36,6 +86,19 @@ async def reconcile_payment(
 
     if not provider_status:
         raise ValueError("Tidepool returned no execution status")
+    
+    allowed_provider_statuses = {
+        "PENDING_DEPOSIT",
+        "KNOWN_DEPOSIT_TX",
+        "INCOMPLETE_DEPOSIT",
+        "PROCESSING",
+        "SUCCESS",
+        "REFUNDED",
+        "FAILED",
+    }
+
+    if provider_status not in allowed_provider_statuses:
+        raise ValueError(f"Unexpected Tidepool payment status: {provider_status}")
 
     attempt.provider_response = status_data
     attempt.status = provider_status
@@ -128,10 +191,10 @@ async def reconcile_payment(
                     )
                 )
 
-        # This is provider-reported settlement confirmation.
-        # It is not yet an independent NEAR RPC verification.
-        if invoice.status != "PAID":
-            invoice.status = "PAID"
+        # Tidepool-reported success is not yet independently verified
+        # against NEAR RPC. The settlement ownership guard still prevents
+        # a second attempt from claiming an already-paid invoice.
+        mark_invoice_settled(db, invoice, attempt)
 
     elif provider_status == "REFUNDED":
         # A refunded attempt does not mean the invoice was paid.
@@ -151,6 +214,7 @@ async def reconcile_payment(
         "invoice_status": invoice.status,
         "received_amount": attempt.received_amount,
         "swap_details": status_data.get("swapDetails"),
+        "payment_attempt_status": attempt.status,
     }
 
 
@@ -386,8 +450,8 @@ async def reconcile_direct_near_payment(
         )
 
     # Only now is the direct payment considered settled.
-    attempt.status = "SUCCESS"
     attempt.received_amount = attempt.expected_amount
+    mark_invoice_settled(db, invoice, attempt)
 
     attempt.provider_response = {
         **(attempt.provider_response or {}),
@@ -407,7 +471,7 @@ async def reconcile_direct_near_payment(
     return {
         "payment_attempt_id": str(attempt.id),
         "invoice_id": str(invoice.id),
-        "provider_status": "SUCCESS",
+        "provider_status": attempt.status,
         "invoice_status": invoice.status,
         "received_amount": attempt.received_amount,
         "verification": "NEAR_RPC_NEp141_EVENT",
