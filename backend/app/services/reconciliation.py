@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from app.integrations.near_intents import near_intents
 from app.models.invoice import Invoice
 from app.models.payment import PaymentAttempt, Transaction
+from app.integrations.near_relayer import near_relayer, NearRelayerError
 from app.core.config import settings
 
 
@@ -63,6 +64,189 @@ def mark_invoice_settled(
     return "SETTLEMENT_REVIEW"
 
 
+async def record_onchain_settlement(
+    db: Session,
+    invoice: Invoice,
+    attempt: PaymentAttempt,
+) -> dict:
+    if attempt.status != "SUCCESS":
+        return {
+            "status": "SKIPPED",
+            "reason": "Payment is not canonical SUCCESS",
+        }
+
+    provider_response = dict(attempt.provider_response or {})
+    previous = dict(provider_response.get("_payflow_contract") or {})
+    previous_status = previous.get("status")
+
+    if not attempt.received_amount:
+        recording = {
+            "status": "FAILED",
+            "error": "Verified received amount is missing",
+        }
+        provider_response["_payflow_contract"] = recording
+        attempt.provider_response = provider_response
+        db.commit()
+        return recording
+
+    expected = {
+        "invoice_id": str(invoice.id),
+        "freelancer": str(invoice.freelancer_id),
+        "amount": str(attempt.received_amount),
+        "token": str(settings.usdc_asset_id),
+        "settlement_reference": str(attempt.id),
+    }
+
+    # Always check the contract before considering a new submission.
+    payload = {
+        "jsonrpc": "2.0",
+        "id": "payflow-settlement-check",
+        "method": "query",
+        "params": {
+            "request_type": "call_function",
+            "finality": "final",
+            "account_id": settings.payflow_contract_id,
+            "method_name": "get_settlement",
+            "args_base64": base64.b64encode(
+                json.dumps(
+                    {"invoice_id": str(invoice.id)}
+                ).encode("utf-8")
+            ).decode("ascii"),
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as client:
+            response = await client.post(
+                settings.near_rpc_url,
+                json=payload,
+            )
+            response.raise_for_status()
+            rpc_data = response.json()
+
+        if rpc_data.get("error"):
+            raise NearRPCError(json.dumps(rpc_data["error"]))
+
+        raw_result = rpc_data.get("result", {}).get("result")
+
+        if raw_result is None:
+            raise NearRPCError("NEAR RPC returned no contract view result")
+
+        onchain_settlement = json.loads(
+            bytes(raw_result).decode("utf-8")
+        )
+
+    except Exception as exc:
+        recording = {
+            "status": "PENDING_CONFIRMATION",
+            "settlement_reference": str(attempt.id),
+            "error": f"Could not check contract state: {exc}",
+        }
+        provider_response["_payflow_contract"] = recording
+        attempt.provider_response = provider_response
+        db.commit()
+        return recording
+
+    # A record already exists: verify that it is this exact payment.
+    if onchain_settlement is not None:
+        matches = all(
+            str(onchain_settlement.get(key)) == value
+            for key, value in expected.items()
+        )
+
+        if matches:
+            recording = {
+                "status": "CONFIRMED",
+                "settlement_reference": str(attempt.id),
+                "onchain_settlement": onchain_settlement,
+            }
+        else:
+            recording = {
+                "status": "CONFLICT",
+                "settlement_reference": str(attempt.id),
+                "error": "A different settlement is already recorded for this invoice",
+                "onchain_settlement": onchain_settlement,
+            }
+
+        provider_response["_payflow_contract"] = recording
+        attempt.provider_response = provider_response
+        db.commit()
+        return recording
+
+    # The contract has no record. If a previous submission may have
+    # reached the relayer, do not blindly submit another one.
+    if previous_status in {
+        "SUBMITTING",
+        "SUBMITTED",
+        "PENDING_CONFIRMATION",
+    }:
+        recording = {
+            **previous,
+            "status": "PENDING_CONFIRMATION",
+            "message": "No on-chain record is visible yet; not resubmitting automatically",
+        }
+        provider_response["_payflow_contract"] = recording
+        attempt.provider_response = provider_response
+        db.commit()
+        return recording
+
+    # Build the signed action. A signing failure means nothing was submitted.
+    try:
+        signed = await near_relayer.create_signed_settlement_action(
+            invoice_id=expected["invoice_id"],
+            freelancer=expected["freelancer"],
+            amount=expected["amount"],
+            token=expected["token"],
+            settlement_reference=expected["settlement_reference"],
+        )
+    except Exception as exc:
+        recording = {
+            "status": "FAILED",
+            "settlement_reference": str(attempt.id),
+            "error": f"Could not sign settlement action: {exc}",
+        }
+        provider_response["_payflow_contract"] = recording
+        attempt.provider_response = provider_response
+        db.commit()
+        return recording
+
+    # Persist before sending. If the request outcome becomes uncertain,
+    # later reconciliation will check the contract instead of resubmitting.
+    recording = {
+        "status": "SUBMITTING",
+        "settlement_reference": str(attempt.id),
+    }
+    provider_response["_payflow_contract"] = recording
+    attempt.provider_response = provider_response
+    db.commit()
+
+    try:
+        result = await near_relayer.submit_signed_delegate_action(
+            delegate_action=signed["delegate_action"],
+            signature=signed["signature"],
+        )
+
+        recording = {
+            "status": "SUBMITTED",
+            "settlement_reference": str(attempt.id),
+            "relayer_response": result,
+        }
+
+    except Exception as exc:
+        # A timeout or connection error does not prove rejection.
+        recording = {
+            "status": "PENDING_CONFIRMATION",
+            "settlement_reference": str(attempt.id),
+            "error": str(exc),
+        }
+
+    provider_response = dict(attempt.provider_response or {})
+    provider_response["_payflow_contract"] = recording
+    attempt.provider_response = provider_response
+    db.commit()
+
+    return recording
+
 async def reconcile_payment(
     db: Session,
     attempt: PaymentAttempt,
@@ -107,6 +291,13 @@ async def reconcile_payment(
         }
 
         db.commit()
+
+        contract_recording = None
+
+        if attempt.status == "SUCCESS":
+            contract_recording = await record_onchain_settlement(db, invoice, attempt)
+
+        response["contract_recording"] = contract_recording
         return response
 
     if not attempt.deposit_address:
@@ -266,10 +457,15 @@ async def reconcile_payment(
         if invoice.status != "PAID":
             invoice.status = "PENDING"
     
-    else :
+    else:
         attempt.status = provider_status
 
     db.commit()
+
+    contract_recording = None
+
+    if provider_status == "SUCCESS" and settlement_result == "SUCCESS":
+        contract_recording = await record_onchain_settlement(db, invoice, attempt)
 
     return {
         "payment_attempt_id": str(attempt.id),
@@ -279,6 +475,7 @@ async def reconcile_payment(
         "received_amount": attempt.received_amount,
         "swap_details": status_data.get("swapDetails"),
         "payment_attempt_status": attempt.status,
+        "contract_recording": contract_recording,
     }
 
 
@@ -305,12 +502,18 @@ async def reconcile_direct_near_payment(
             .one()
         )
 
+        contract_recording = None
+
+        if attempt.status == "SUCCESS":
+            contract_recording = await record_onchain_settlement(db, invoice, attempt)
+
         return {
             "payment_attempt_id": str(attempt.id),
             "invoice_id": str(invoice.id),
             "provider_status": attempt.status,
             "invoice_status": invoice.status,
             "received_amount": attempt.received_amount,
+            "contract_recording": contract_recording,
         }
 
     invoice = (
@@ -515,7 +718,7 @@ async def reconcile_direct_near_payment(
 
     # Only now is the direct payment considered settled.
     attempt.received_amount = attempt.expected_amount
-    mark_invoice_settled(db, invoice, attempt)
+    settlement_result = mark_invoice_settled(db, invoice, attempt)
 
     attempt.provider_response = {
         **(attempt.provider_response or {}),
@@ -530,6 +733,11 @@ async def reconcile_direct_near_payment(
 
     db.commit()
 
+    contract_recording = None
+
+    if settlement_result == "SUCCESS":
+        contract_recording = await record_onchain_settlement(db, invoice, attempt)
+
     return {
         "payment_attempt_id": str(attempt.id),
         "invoice_id": str(invoice.id),
@@ -537,4 +745,5 @@ async def reconcile_direct_near_payment(
         "invoice_status": invoice.status,
         "received_amount": attempt.received_amount,
         "verification": "NEAR_RPC_NEp141_EVENT",
+        "contract_recording": contract_recording,
     }

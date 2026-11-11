@@ -113,18 +113,14 @@ class NearRelayer:
                         "Unexpected action type in DelegateAction"
                     )
 
-                serialized_actions.append(
-                    {
-                        "FunctionCall": {
-                            "method_name": action.method_name,
-                            "args": base64.b64encode(
-                                bytes(action.args)
-                            ).decode("ascii"),
-                            "gas": str(action.gas),
-                            "deposit": str(action.deposit),
-                        }
+                serialized_actions.append({
+                    "FunctionCall": {
+                        "method_name": action.method_name,
+                        "args": base64.b64encode(bytes(action.args)).decode("ascii"),
+                        "gas": int(action.gas),
+                        "deposit": int(action.deposit),
                     }
-                )
+                })
 
             delegate_json = {
                 "sender_id": delegate.sender_id,
