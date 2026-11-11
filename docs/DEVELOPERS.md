@@ -186,13 +186,15 @@ The FastAPI application handles:
 
 SQLAlchemy models persist the application data in PostgreSQL.
 
-### Smart contract and relayer
+### Smart contract and Pagoda Relayer
 
-The project includes a Rust smart contract built with `near-sdk`.
+The project includes a Rust smart contract built with `near-sdk` and uses NEP-366 meta-transactions for sponsored contract interactions.
 
-The integration includes NEP-366/meta-transaction support and a relayer for sponsored contract interactions.
+PayFlow integrates with the **Pagoda Relayer** to submit supported meta-transactions on behalf of users, reducing the need for freelancers to hold NEAR merely to interact with the PayFlow contract.
 
-Sponsored contract calls should not be confused with every wallet transaction. Wallet actions outside the sponsored contract path may still require the relevant account to pay network fees.
+The relayer integration is part of the transaction sponsorship architecture. It does not mean every wallet operation or ordinary NEAR transfer is gasless; sponsorship applies to supported contract interactions.
+
+For local development and integration details, refer to the Pagoda Relayer implementation and its configuration alongside PayFlow's relayer integration.
 
 ## 7. Authentication
 
