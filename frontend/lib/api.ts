@@ -63,3 +63,101 @@ export async function downloadCsv(
 
   URL.revokeObjectURL(url);
 }
+
+import type { Refund } from "@/lib/types";
+
+export async function getRefunds(): Promise<Refund[]> {
+  const result = await apiRequest<Refund[]>("/refunds");
+
+  return Array.isArray(result)
+    ? result.map((refund) => ({
+        ...refund,
+        id: refund.id || refund.refund_id || "",
+      }))
+    : [];
+}
+
+export async function getRefund(refundId: string): Promise<Refund> {
+  const result = await apiRequest<Refund>(`/refunds/${refundId}`);
+
+  return {
+    ...result,
+    id: result.id || result.refund_id || refundId,
+  };
+}
+
+export interface RefundQuotePayload {
+  destination_network: string;
+  destination_asset: string;
+  destination_address: string;
+  requested_amount: string;
+}
+
+export interface RefundDepositPayload {
+  tx_hash: string;
+  near_sender_account: string;
+}
+
+export async function createRefundQuote(
+  paymentAttemptId: string,
+  idempotencyKey?: string
+): Promise<Refund> {
+  const result = await apiRequest<Refund>(
+    `/refunds/quote/${paymentAttemptId}`,
+    {
+      method: "POST",
+      headers: idempotencyKey
+        ? { "Idempotency-Key": idempotencyKey }
+        : undefined,
+    }
+  );
+
+  return {
+    ...result,
+    id: result.id || result.refund_id || "",
+  };
+}
+
+export async function approveRefund(refundId: string): Promise<Refund> {
+  const result = await apiRequest<Refund>(
+    `/refunds/${refundId}/approve`,
+    { method: "POST" }
+  );
+
+  return {
+    ...result,
+    id: result.id || result.refund_id || refundId,
+  };
+}
+
+export async function submitRefundDeposit(
+  refundId: string,
+  payload: RefundDepositPayload
+): Promise<Refund> {
+  const result = await apiRequest<Refund>(
+    `/refunds/${refundId}/deposit-submit`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }
+  );
+
+  return {
+    ...result,
+    id: result.id || result.refund_id || refundId,
+  };
+}
+
+export async function reconcileRefund(
+  refundId: string
+): Promise<Refund> {
+  const result = await apiRequest<Refund>(
+    `/refunds/${refundId}/reconcile`,
+    { method: "POST" }
+  );
+
+  return {
+    ...result,
+    id: result.id || result.refund_id || refundId,
+  };
+}

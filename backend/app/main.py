@@ -8,11 +8,12 @@ from app.models.client import Client
 from app.models.invoice import Invoice
 from app.models.invoice_item import InvoiceItem
 from app.models.payment import PaymentAttempt, Transaction
+from app.models.refund import Refund, RefundTransaction
 
 from app.core.config import settings
 from app.core.database import Base, engine
 
-from app.api import auth, invoices, payments, reports, clients, relayer
+from app.api import auth, invoices, payments, reports, clients, relayer, refunds
 
 Base.metadata.create_all(bind=engine)
 
@@ -36,6 +37,7 @@ app.include_router(payments.router, prefix="/api")
 app.include_router(reports.router, prefix="/api")
 app.include_router(clients.router, prefix="/api")
 app.include_router(relayer.router, prefix="/api")
+app.include_router(refunds.router, prefix="/api")
 
 
 @app.get("/")

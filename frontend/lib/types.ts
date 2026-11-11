@@ -57,6 +57,10 @@ export interface PaymentAttempt {
   destination_asset?: string;
   expected_amount?: string;
   received_amount?: string | null;
+  payer_address?: string | null;
+  payer_network?: RefundNetwork | null;
+  payer_asset?: string | null;
+  payer_asset_decimals?: number | null;
   created_at?: string;
   transactions?: Transaction[];
 }
@@ -78,4 +82,59 @@ export interface DashboardStats {
   invoice_count: number;
   paid_count: number;
   pending_count: number;
+}
+
+export type RefundStatus =
+  | "AWAITING_APPROVAL"
+  | "PENDING"
+  | "PROCESSING"
+  | "SUCCESS"
+  | "FAILED"
+  | "REVIEW";
+
+export type RefundNetwork =
+  | "near"
+  | "base"
+  | "arb"
+  | "eth"
+  | "bsc"
+  | "sol"
+  | "stellar"
+  | "sui";
+
+export interface Refund {
+  id: string;
+  refund_id?: string;
+  payment_attempt_id: string;
+  status: RefundStatus;
+
+  destination_network: RefundNetwork;
+  destination_asset: string;
+  destination_address: string;
+
+  requested_amount: string;
+  source_amount: string;
+  expected_amount: string;
+  received_amount?: string | null;
+
+  source_asset?: string;
+  deposit_address?: string | null;
+  deposit_memo?: string | null;
+
+  fee_details?: Record<string, unknown> | null;
+
+  created_at?: string;
+  approved_at?: string | null;
+  completed_at?: string | null;
+
+  transactions?: RefundTransaction[];
+}
+
+export interface RefundTransaction {
+  chain: string;
+  tx_hash: string;
+  transaction_type: string;
+  asset?: string | null;
+  amount?: string | null;
+  explorer_url?: string | null;
 }

@@ -266,16 +266,30 @@ function PublicPaymentPageContent() {
 
     const direct = attempt.payment_mode === "DIRECT_NEAR";
 
-    const nearSenderAccount = direct
-      ? payerNearAccount.trim()
-      : selectedToken?.blockchain.toLowerCase() === "near"
-        ? refundAddress.trim()
-        : undefined;
-
-    if (direct && !nearSenderAccount) {
-      setError("Enter the payer's NEAR account ID.");
+    if (!selectedToken) {
+      setError("Selected payment asset is missing.");
       return;
     }
+
+    const payerAddress = direct
+      ? payerNearAccount.trim()
+      : refundAddress.trim();
+
+    const payerNetwork = direct
+      ? "near"
+      : selectedToken.blockchain.toLowerCase();
+
+    if (!payerAddress) {
+      setError(
+        direct
+          ? "Enter the payer's NEAR account ID."
+          : "Enter the payer's source-chain refund address."
+      );
+      return;
+    }
+
+    const nearSenderAccount =
+      payerNetwork === "near" ? payerAddress : undefined;
 
     try {
       setSubmitting(true);
@@ -290,6 +304,10 @@ function PublicPaymentPageContent() {
             ...(nearSenderAccount
               ? { near_sender_account: nearSenderAccount }
               : {}),
+            payer_address: payerAddress,
+            payer_network: payerNetwork,
+            payer_asset: selectedToken.assetId,
+            payer_asset_decimals: selectedToken.decimals,
           }),
         }
       );
@@ -297,7 +315,7 @@ function PublicPaymentPageContent() {
       await checkStatus();
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Could not submit transaction"
+        err instanceof Error ? err.message : "Could not submit deposit"
       );
     } finally {
       setSubmitting(false);

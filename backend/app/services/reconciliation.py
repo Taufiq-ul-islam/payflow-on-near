@@ -74,6 +74,41 @@ async def reconcile_payment(
         .one()
     )
 
+    if attempt.status in FINAL_STATUSES:
+        invoice = (
+            db.query(Invoice)
+            .filter(Invoice.id == attempt.invoice_id)
+            .one()
+        )
+
+        status_data = attempt.provider_response or {}
+
+        # Repair successful payments whose received amount was not persisted.
+        if attempt.status == "SUCCESS" and not attempt.received_amount:
+            swap_details = status_data.get("swapDetails") or {}
+            recovered_amount = swap_details.get("amountOut")
+
+            if recovered_amount:
+                if str(recovered_amount) != str(attempt.expected_amount):
+                    raise ValueError("Stored settlement amount does not match expected amount")
+
+                attempt.received_amount = str(recovered_amount)
+                db.commit()
+                db.refresh(attempt)
+
+        response = {
+            "payment_attempt_id": str(attempt.id),
+            "invoice_id": str(invoice.id),
+            "provider_status": status_data.get("status") or attempt.status,
+            "invoice_status": invoice.status,
+            "received_amount": attempt.received_amount,
+            "swap_details": status_data.get("swapDetails"),
+            "payment_attempt_status": attempt.status,
+        }
+
+        db.commit()
+        return response
+
     if not attempt.deposit_address:
         raise ValueError("Payment attempt has no deposit address")
 
@@ -101,7 +136,6 @@ async def reconcile_payment(
         raise ValueError(f"Unexpected Tidepool payment status: {provider_status}")
 
     attempt.provider_response = status_data
-    attempt.status = provider_status
 
     invoice = (
         db.query(Invoice)
@@ -114,6 +148,12 @@ async def reconcile_payment(
         original_quote = attempt.quote_response
         status_quote = status_data.get("quoteResponse") or {}
 
+        if status_data.get("correlationId") != status_quote.get("correlationId"):
+            raise ValueError("Tidepool correlation ID mismatch")
+
+        if original_quote.get("correlationId") != status_quote.get("correlationId"):
+            raise ValueError("Tidepool response does not match original quote")
+
         original_request = original_quote.get("quoteRequest") or {}
         status_request = status_quote.get("quoteRequest") or {}
 
@@ -121,17 +161,23 @@ async def reconcile_payment(
         swap_details = status_data.get("swapDetails") or {}
 
         # Ensure the status response refers to our original quote.
-        if (
-            status_quote_details.get("depositAddress")
-            != attempt.deposit_address
-        ):
+        if status_quote_details.get("depositAddress") != attempt.deposit_address :
             raise ValueError("Status response deposit address mismatch")
 
-        if (
-            status_request.get("destinationAsset")
-            != attempt.destination_asset
-        ):
+        if status_request.get("destinationAsset") != attempt.destination_asset :
             raise ValueError("Destination asset mismatch")
+        
+        if attempt.destination_asset != settings.usdc_asset_id:
+            raise ValueError("Payment attempt destination is not configured USDC")
+
+        if status_request.get("amount") != attempt.expected_amount:
+            raise ValueError("Tidepool requested amount mismatch")
+
+        if status_quote_details.get("amountOut") != attempt.expected_amount:
+            raise ValueError("Tidepool quoted output amount mismatch")
+
+        if status_quote.get("signature") != original_quote.get("signature"):
+            raise ValueError("Tidepool quote signature mismatch")
 
         if status_request.get("recipient") != invoice.freelancer_id:
             raise ValueError("Settlement recipient mismatch")
@@ -167,43 +213,61 @@ async def reconcile_payment(
 
         attempt.received_amount = received_amount
 
-        for item in destination_transactions:
-            tx_hash = item.get("hash")
+        # Store one primary settlement transaction with the full
+        # received amount. The complete list of destination hashes
+        # remains available in attempt.provider_response.
+        primary_transaction = destination_transactions[0]
 
-            if not tx_hash:
-                continue
+        if not isinstance(primary_transaction, dict):
+            raise ValueError("Invalid destination transaction entry")
 
-            exists = (
-                db.query(Transaction)
-                .filter(Transaction.tx_hash == tx_hash)
-                .first()
-            )
+        tx_hash = primary_transaction.get("hash")
 
-            if not exists:
-                db.add(
-                    Transaction(
-                        payment_attempt_id=attempt.id,
-                        chain="NEAR",
-                        tx_hash=tx_hash,
-                        transaction_type="SETTLEMENT",
-                        amount=received_amount,
-                        explorer_url=item.get("explorerUrl"),
-                    )
+        if not isinstance(tx_hash, str) or not tx_hash.strip():
+            raise ValueError("Missing destination transaction hash")
+
+        existing_transaction = (
+            db.query(Transaction)
+            .filter(Transaction.tx_hash == tx_hash)
+            .first()
+        )
+
+        if existing_transaction:
+            if existing_transaction.payment_attempt_id != attempt.id:
+                raise ValueError(
+                    "Destination transaction is already associated "
+                    "with another payment attempt"
                 )
+        else:
+            db.add(
+                Transaction(
+                    payment_attempt_id=attempt.id,
+                    chain="NEAR",
+                    tx_hash=tx_hash,
+                    transaction_type="SETTLEMENT",
+                    amount=received_amount,
+                    explorer_url=primary_transaction.get("explorerUrl"),
+                )
+            )
 
         # Tidepool-reported success is not yet independently verified
         # against NEAR RPC. The settlement ownership guard still prevents
         # a second attempt from claiming an already-paid invoice.
-        mark_invoice_settled(db, invoice, attempt)
+        settlement_result = mark_invoice_settled(db, invoice, attempt)
 
     elif provider_status == "REFUNDED":
+        attempt.status = "REFUNDED"
         # A refunded attempt does not mean the invoice was paid.
         if invoice.status != "PAID":
             invoice.status = "PENDING"
 
     elif provider_status == "FAILED":
+        attempt.status = "FAILED"
         if invoice.status != "PAID":
             invoice.status = "PENDING"
+    
+    else :
+        attempt.status = provider_status
 
     db.commit()
 
@@ -463,8 +527,6 @@ async def reconcile_direct_near_payment(
     transaction_record.explorer_url = (
         f"https://testnet.nearblocks.io/txns/{tx_hash}"
     )
-
-    invoice.status = "PAID"
 
     db.commit()
 

@@ -1,10 +1,13 @@
 # PayFlow — Project Documentation
 
-**Cross-chain invoicing with USDC settlement on NEAR**
+**Cross-chain invoicing with automatic USDC settlement on NEAR**
 
-Version: 1.0  
-Project: Hackathon Track 08 — Real-World Money  
-Status: Working prototype
+| Project detail | Information |
+|---|---|
+| Project | Hackathon Track 08 — Real-World Money |
+| Version | 1.1 |
+| Status | Working testnet prototype; security hardening in progress |
+| Primary objective | Simple USD invoicing with automatic USDC settlement |
 
 ---
 
@@ -12,45 +15,66 @@ Status: Working prototype
 
 ## 1.1 What is PayFlow?
 
-PayFlow is a crypto-powered invoicing platform designed for freelancers who don't want to deal with the complexity of cryptocurrency.
+PayFlow is a cross-chain invoicing platform designed to make cryptocurrency payments feel as simple as traditional invoicing.
 
-A freelancer creates an invoice denominated in USD and shares a payment link with their client. The client can pay using supported cryptocurrencies from different chains, while the freelancer receives USDC on the NEAR blockchain.
+Freelancers create invoices in USD and share payment links with their clients. Clients can pay using supported cryptocurrencies and networks, while PayFlow handles the payment routing, conversion, and settlement.
 
-The freelancer does not need to understand cross-chain bridges, token swaps, or blockchain-specific payment processes.
+The freelancer receives USDC on NEAR, regardless of which supported asset the client uses to pay.
 
-PayFlow handles the payment routing and conversion behind the scenes.
+**The central idea is that users should not have to understand cryptocurrency infrastructure to use PayFlow.**
 
-## 1.2 Problem Statement
+## 1.2 The Most Important Product Principle
 
-Freelancers working internationally often face difficulties receiving payments:
+> **Freelancers should not need to know anything about the cryptocurrency their clients use. They should simply invoice in USD and receive USDC.**
 
-- Traditional international transfers can be expensive and slow.
+PayFlow is not intended to be a cryptocurrency management dashboard. It is an invoicing and payment application that uses blockchain infrastructure behind the scenes.
+
+The intended experience is:
+
+| User | What they need to understand |
+|---|---|
+| Freelancer | Create invoices in USD, share payment links, and receive USDC |
+| Client | Open an invoice and pay using an available payment method |
+| PayFlow | Handle token conversion, network routing, settlement, and verification |
+
+For example:
+
+- A freelancer creates an invoice for $100.
+- The client pays using ETH.
+- Another client might pay using BTC or SOL, where supported by the payment infrastructure.
+- PayFlow routes and converts the payment.
+- The freelancer receives the corresponding USDC settlement on NEAR.
+
+The freelancer should not have to identify the source token, understand bridges, manually swap assets, or manage different blockchain networks.
+
+**The dashboard should display familiar financial information: invoice amounts, payments, outstanding balances, and USDC receipts.**
+
+Technical blockchain information may be available as optional transaction details, but it should not be required to understand or operate the application.
+
+## 1.3 Problem Statement
+
+Freelancers working internationally often encounter difficulties receiving payments:
+
+- Traditional international transfers can be slow and expensive.
 - Clients and freelancers may use different payment networks.
-- Cryptocurrency payments introduce complexity around wallets, tokens, and chains.
+- Cryptocurrency payments introduce complexity around wallets, assets, and networks.
 - Cross-chain transfers require additional infrastructure.
-- Freelancers may not want to manage multiple cryptocurrencies.
+- Freelancers may not want to hold or manage multiple cryptocurrencies.
 
-## 1.3 Solution
+## 1.4 Solution
 
 PayFlow provides:
 
 - USD-denominated invoice creation.
 - Client management and reusable client records.
 - Shareable public invoice payment pages.
-- Support for different payment assets.
-- Cross-chain conversion into USDC on NEAR.
+- Support for multiple payment assets and networks.
+- Automatic conversion into USDC on NEAR.
 - Payment tracking and invoice status management.
+- Refund functionality for eligible payments.
 - A unified dashboard for invoices, clients, and payments.
 
-## 1.4 Core Principle
-
-**The client pays with what they have. The freelancer receives what they want.**
-
-| Role | Experience |
-|---|---|
-| Freelancer | Creates USD invoices and receives USDC |
-| Client | Pays using a supported token and chain |
-| PayFlow | Handles payment routing, conversion, and tracking |
+**Core principle: The client pays with what they have. The freelancer receives USDC.**
 
 ---
 
@@ -80,20 +104,20 @@ PayFlow provides:
 
 | Technology | Purpose |
 |---|---|
-| NEAR Protocol | Destination settlement blockchain |
-| USDC on NEAR | Freelancer settlement currency |
+| NEAR Protocol | Freelancer settlement blockchain |
+| USDC on NEAR | Standard freelancer settlement currency |
 | Tidepool | Testnet cross-chain payment and conversion infrastructure |
 | NEAR RPC | Blockchain transaction verification |
 | Rust | NEAR smart contract development |
-| NEP-366 | Meta-transaction infrastructure / relayer support |
+| NEP-366 | Meta-transaction infrastructure and relayer support |
 
-**Important:** The current Tidepool integration uses its testnet sandbox and test tokens. These tokens have no monetary value. Tidepool is being used as a 1Click-compatible test environment, not as an official NEAR or Defuse service.
+**Testnet limitation:** The current Tidepool integration uses its sandbox environment and test tokens. These tokens have no monetary value. This integration is a test environment and should not be represented as an official production 1Click integration.
 
 ---
 
 # 3. System Architecture
 
-PayFlow follows a frontend-backend architecture with a PostgreSQL database and external blockchain/payment infrastructure.
+PayFlow follows a frontend-backend architecture with PostgreSQL and external blockchain/payment infrastructure.
 
 ## 3.1 High-Level Architecture
 
@@ -107,7 +131,7 @@ flowchart TB
         ClientUI["Client Management"]
         InvoiceUI["Invoice Management"]
         PaymentUI["Public Payment Page"]
-        PaymentsUI["Payment Tracking"]
+        PaymentsUI["Payment History"]
     end
 
     subgraph Backend["FastAPI Backend"]
@@ -115,17 +139,18 @@ flowchart TB
         InvoiceService["Invoice Services"]
         ClientService["Client Services"]
         PaymentService["Payment Services"]
-        ReportService["Reporting Services"]
+        RefundService["Refund Services"]
         Verification["Payment Verification"]
     end
 
     DB[("PostgreSQL Database")]
 
-    subgraph PaymentInfrastructure["Payment Infrastructure"]
+    subgraph Infrastructure["Payment Infrastructure"]
         Tidepool["Tidepool Testnet"]
         NEARRPC["NEAR RPC"]
         NEAR["NEAR Blockchain"]
         USDC["USDC on NEAR"]
+        Destination["Destination Networks"]
     end
 
     Freelancer --> Dashboard
@@ -136,72 +161,53 @@ flowchart TB
     API --> InvoiceService
     API --> ClientService
     API --> PaymentService
-    API --> ReportService
+    API --> RefundService
+    API --> Verification
 
     InvoiceService --> DB
     ClientService --> DB
     PaymentService --> DB
-    ReportService --> DB
+    RefundService --> DB
 
     PaymentService --> Tidepool
-    PaymentService --> Verification
+    RefundService --> Tidepool
     Verification --> NEARRPC
     NEARRPC --> NEAR
     NEAR --> USDC
+    Tidepool --> Destination
 ```
 
 ## 3.2 Component Responsibilities
 
 ### Frontend
 
-The frontend provides the user-facing interface.
-
-Its responsibilities include:
-
-- Displaying freelancer dashboard statistics.
-- Creating and managing invoices.
-- Managing saved clients.
-- Displaying public payment pages.
-- Allowing clients to select supported payment assets.
-- Displaying payment status and transaction information.
-- Displaying reports and payment history.
+- Display freelancer dashboard statistics.
+- Create and manage invoices.
+- Manage saved clients.
+- Display public invoice payment pages.
+- Present payment options to clients.
+- Display payment and refund history.
+- Provide clear status and transaction information.
 
 ### Backend
 
-The backend handles business logic and communication with external services.
-
-Its responsibilities include:
-
-- Creating invoices.
-- Managing client records.
-- Calculating and storing invoice totals.
-- Creating payment attempts.
-- Requesting payment quotes and deposit instructions.
-- Communicating with Tidepool.
-- Interacting with NEAR RPC.
-- Tracking payment and invoice statuses.
-- Producing reporting data.
+- Handle invoice and client operations.
+- Create payment attempts.
+- Request payment quotes and deposit instructions.
+- Communicate with Tidepool.
+- Interact with NEAR RPC.
+- Verify payment and refund transactions.
+- Manage payment and invoice statuses.
+- Prevent duplicate payment processing.
+- Provide reporting data.
 
 ### PostgreSQL
 
-PostgreSQL stores the application's persistent data.
+Stores persistent application data, including users, clients, invoices, invoice items, payment attempts, blockchain transactions, refunds, and refund transactions.
 
-It contains records for:
+### Blockchain and Payment Infrastructure
 
-- Users/freelancers.
-- Clients.
-- Invoices.
-- Invoice items.
-- Payment attempts.
-- Blockchain transactions.
-
-### Blockchain Infrastructure
-
-The payment infrastructure handles asset transfers and conversion.
-
-For direct NEAR USDC payments, the client transfers USDC directly to the freelancer.
-
-For cross-chain payments, Tidepool provides the deposit instructions and handles the conversion into destination USDC.
+Handles asset transfers, cross-chain conversion, destination settlement, and transaction verification.
 
 ---
 
@@ -217,25 +223,17 @@ payflow/
 │   │   ├── dashboard/
 │   │   │   ├── page.tsx
 │   │   │   ├── clients/
-│   │   │   │   └── page.tsx
 │   │   │   ├── invoices/
-│   │   │   │   ├── page.tsx
-│   │   │   │   ├── new/
-│   │   │   │   │   └── page.tsx
-│   │   │   │   └── [id]/
-│   │   │   │       └── page.tsx
 │   │   │   ├── payments/
-│   │   │   │   └── page.tsx
 │   │   │   └── reports/
-│   │   │       └── page.tsx
 │   │   │
 │   │   └── pay/
 │   │       └── [id]/
-│   │           └── page.tsx
 │   │
 │   ├── lib/
 │   │   ├── api.ts
 │   │   ├── format.ts
+│   │   ├── near-transfer.ts
 │   │   └── types.ts
 │   │
 │   └── .env.local
@@ -246,6 +244,7 @@ payflow/
 │   │   │   ├── clients.py
 │   │   │   ├── invoices.py
 │   │   │   ├── payments.py
+│   │   │   ├── refunds.py
 │   │   │   ├── reports.py
 │   │   │   └── relayer.py
 │   │   │
@@ -254,28 +253,21 @@ payflow/
 │   │   │   └── database.py
 │   │   │
 │   │   ├── models/
-│   │   │   ├── user.py
-│   │   │   ├── client.py
-│   │   │   ├── invoice.py
-│   │   │   ├── invoice_item.py
-│   │   │   └── payment.py
-│   │   │
 │   │   ├── schemas/
-│   │   │   ├── client.py
-│   │   │   └── ...
-│   │   │
+│   │   ├── integrations/
 │   │   └── services/
-│   │       ├── client_service.py
+│   │       ├── refund_service.py
+│   │       ├── refund_reconciliation.py
 │   │       └── ...
 │   │
-│   └── .env
+│   └── migrations/
 │
 └── contracts/
     └── payflow/
         └── ...
 ```
 
-*Note: This is a documentation-level representation of the project structure, not a verified exhaustive listing of every current file.*
+*This is a documentation-level representation, not a verified exhaustive listing of every current project file.*
 
 ---
 
@@ -283,42 +275,38 @@ payflow/
 
 ## 5.1 Dashboard
 
-The dashboard gives freelancers an overview of their invoicing activity.
+The dashboard provides a simplified overview of the freelancer's invoicing activity.
 
-Expected information includes:
+Expected information:
 
 - Total invoiced amount.
 - Total paid amount.
-- Outstanding/pending amount.
-- Total invoice count.
-- Paid invoice count.
-- Pending invoice count.
-- Recent activity.
+- Outstanding amount.
+- Invoice counts.
+- Paid and pending invoice counts.
+- Recent payment activity.
+
+The dashboard should use USD-oriented financial terminology and avoid requiring users to understand blockchain-specific concepts.
 
 ## 5.2 Client Management
 
 Freelancers can save and reuse client information.
 
-Client records contain:
+Typical client fields:
 
 | Field | Description |
 |---|---|
 | id | Unique client identifier |
-| freelancer_id | Freelancer who owns the client record |
-| name | Client's name |
-| email | Client's email |
-| company | Optional company name |
-| notes | Optional additional information |
-| created_at | Record creation timestamp |
+| freelancer_id | Freelancer who owns the record |
+| name | Client name |
+| email | Client email |
+| company | Optional company |
+| notes | Additional information |
+| created_at | Creation timestamp |
 
-A freelancer can:
+Supported operations include adding, listing, selecting, and deleting client records.
 
-- Add clients.
-- View saved clients.
-- Delete clients.
-- Reuse saved client information while creating invoices.
-
-The database enforces uniqueness of client email per freelancer.
+Client ownership and data isolation must be enforced by the backend.
 
 ## 5.3 Invoice Management
 
@@ -326,54 +314,62 @@ Invoices are denominated in USD.
 
 An invoice contains:
 
-- Invoice ID.
-- Invoice number.
+- Invoice ID and invoice number.
 - Freelancer ID.
-- Client name.
-- Client email.
+- Client name and email.
 - Line items.
 - Total amount.
 - Currency.
 - Due date.
 - Invoice status.
 - Creation timestamp.
-- Payment URL.
+- Public payment URL.
 
 Each invoice can contain multiple line items.
 
-An invoice item contains:
-
-- Description.
-- Quantity.
-- Unit price.
-
-The invoice total is calculated from the line items.
+The invoice total is calculated from quantities and unit prices.
 
 ## 5.4 Payment Management
 
-Payment attempts are separate from invoices.
-
-This is important because one invoice may have multiple payment attempts.
+Payment attempts are separate from invoices because one invoice may have multiple payment attempts.
 
 A payment attempt can store:
 
 - Associated invoice.
 - Payment attempt identifier.
-- Source asset.
+- Source asset and network.
+- Payer wallet information.
 - Destination asset.
-- Expected amount.
-- Deposit address.
-- Deposit memo.
+- Expected settlement amount.
+- Deposit address and memo.
 - Payment status.
 - Associated blockchain transactions.
 
-A separate transaction record stores blockchain transaction information.
+The original payer network, asset, and address are persisted so that the refund flow can use the original payment details without asking the freelancer to enter them again.
 
-## 5.5 Reports
+## 5.5 Refund Management
 
-The reporting module provides a summary of invoicing and payment activity.
+Refunds are separate records linked to payment attempts.
 
-It can be used to display:
+The intended refund flow is:
+
+1. Freelancer selects Refund for an eligible payment.
+2. PayFlow uses the original payer's network and wallet information.
+3. The refund quote is generated.
+4. The freelancer reviews the source amount and expected destination amount.
+5. The freelancer approves and sends the refund.
+6. PayFlow monitors the provider and destination settlement.
+7. The refund history displays the verified result.
+
+For cross-chain refunds, the freelancer sends the USDC received on NEAR, and the payer receives USDC on the original payment network.
+
+The freelancer should not have to manually select a network, token, recipient address, or refund amount.
+
+Refund verification and recovery remain an active development area; see Section 10.
+
+## 5.6 Reports
+
+The reporting module provides financial and operational summaries:
 
 - Revenue.
 - Invoice counts.
@@ -386,7 +382,7 @@ It can be used to display:
 
 # 6. Database Architecture
 
-The core database entities are:
+The core database entities include:
 
 ```mermaid
 erDiagram
@@ -395,6 +391,8 @@ erDiagram
     INVOICE ||--|{ INVOICE_ITEM : contains
     INVOICE ||--o{ PAYMENT_ATTEMPT : has
     PAYMENT_ATTEMPT ||--o{ TRANSACTION : records
+    PAYMENT_ATTEMPT ||--o{ REFUND : may_have
+    REFUND ||--o{ REFUND_TRANSACTION : records
 
     USER {
         uuid id PK
@@ -406,21 +404,15 @@ erDiagram
         string freelancer_id
         string name
         string email
-        string company
-        text notes
-        datetime created_at
     }
 
     INVOICE {
         uuid id PK
         string invoice_number
         string freelancer_id
-        string client_name
-        string client_email
         decimal total
         string currency
         string status
-        datetime due_date
     }
 
     INVOICE_ITEM {
@@ -435,10 +427,11 @@ erDiagram
         uuid id PK
         uuid invoice_id FK
         string status
-        string source_asset
+        string payer_address
+        string payer_network
+        string payer_asset
         string destination_asset
-        string expected_amount
-        string deposit_address
+        string received_amount
     }
 
     TRANSACTION {
@@ -447,65 +440,94 @@ erDiagram
         string chain
         string tx_hash
         string transaction_type
-        string amount
+    }
+
+    REFUND {
+        uuid id PK
+        uuid payment_attempt_id FK
+        string status
+        string destination_network
+        string destination_asset
+        decimal source_amount
+        decimal expected_amount
+    }
+
+    REFUND_TRANSACTION {
+        uuid id PK
+        uuid refund_id FK
+        string chain
+        string tx_hash
+        string transaction_type
     }
 ```
 
-The diagram represents the conceptual relationships. In the current invoice creation flow, client details are copied into the invoice as `client_name` and `client_email`; a persistent `client_id` relationship has not yet been established.
+The diagram represents conceptual relationships. In the current invoice creation flow, client details are copied into the invoice; a persistent invoice-to-client relationship should be verified before being assumed.
 
 ## 6.1 Invoice Statuses
 
 | Status | Meaning |
 |---|---|
-| PENDING | Invoice created, awaiting payment |
-| PAID | Invoice successfully settled |
-| CANCELLED | Invoice cancelled |
-| EXPIRED | Invoice expired |
+| PENDING | Awaiting payment |
+| PAID | Successfully settled |
+| CANCELLED | Cancelled |
+| EXPIRED | Expired |
 
 ## 6.2 Payment Statuses
 
 | Status | Meaning |
 |---|---|
-| PENDING_DEPOSIT | Waiting for the payer's deposit |
-| KNOWN_DEPOSIT_TX | A deposit transaction has been identified |
-| INCOMPLETE_DEPOSIT | Deposit received but insufficient/incomplete |
-| PROCESSING | Payment is being processed |
+| PENDING_DEPOSIT | Waiting for payer deposit |
+| KNOWN_DEPOSIT_TX | Deposit transaction identified |
+| INCOMPLETE_DEPOSIT | Deposit received but insufficient |
+| PROCESSING | Payment being processed |
 | SUCCESS | Payment successfully settled |
-| REFUNDED | Payment refunded |
+| DUPLICATE_SETTLEMENT | Additional successful payment for an already-paid invoice |
 | FAILED | Payment failed |
+
+## 6.3 Refund Statuses
+
+| Status | Meaning |
+|---|---|
+| AWAITING_APPROVAL | Quote created; awaiting freelancer approval |
+| PENDING | Refund submitted or awaiting processing |
+| PROCESSING | Provider is processing the refund |
+| REVIEW | Automated verification requires investigation |
+| SUCCESS | Destination refund successfully verified |
+| FAILED | Refund failed |
+
+A `REVIEW` status must not be treated as a successful refund. It requires investigation and controlled reconciliation.
 
 ---
 
-# 7. Complete Freelancer Workflow
-
-The freelancer uses PayFlow to manage the invoicing process.
+# 7. Freelancer Workflow
 
 ```mermaid
 flowchart TD
     A["Freelancer opens dashboard"]
-    B["Add or select a saved client"]
-    C["Create invoice"]
+    B["Add or select saved client"]
+    C["Create USD invoice"]
     D["Add line items and due date"]
-    E["Calculate invoice total in USD"]
-    F["Save invoice in PostgreSQL"]
-    G["Generate public payment link"]
-    H["Share link with client"]
-    I["Track payment status"]
+    E["Save invoice"]
+    F["Generate public payment link"]
+    G["Share link with client"]
+    H["Track payment in dashboard"]
+    I["Receive USDC settlement"]
 
     A --> B --> C --> D --> E --> F --> G --> H --> I
 ```
 
-## Step-by-Step
-
 1. Freelancer opens the dashboard.
 2. Freelancer creates or selects a saved client.
 3. Freelancer creates an invoice.
-4. Freelancer adds descriptions, quantities, and prices.
-5. PayFlow calculates the total in USD.
-6. Backend saves the invoice and invoice items.
-7. A unique invoice number and payment URL are generated.
-8. Freelancer shares the payment link with the client.
+4. Freelancer enters line items and prices.
+5. PayFlow calculates the invoice total in USD.
+6. The backend saves the invoice.
+7. A public payment link is generated.
+8. Freelancer shares the link with the client.
 9. Freelancer tracks the payment from the dashboard.
+10. PayFlow settles the payment in USDC on NEAR.
+
+The freelancer should not need to interact with bridges, swaps, or source-chain payment details.
 
 ---
 
@@ -513,265 +535,265 @@ flowchart TD
 
 The client does not need access to the freelancer dashboard.
 
-The client opens a public payment link and selects an available payment method.
+The client opens a public payment link, reviews the invoice, and chooses an available payment method.
 
 ```mermaid
 flowchart TD
-    A["Client opens invoice payment link"]
-    B["Backend retrieves invoice"]
-    C["Display invoice details and amount"]
-    D["Client selects payment asset"]
-    E{"Payment route?"}
+    A["Client opens invoice link"]
+    B["Display invoice in USD"]
+    C["Client selects available payment asset"]
+    D{"Payment route"}
+    E["Direct NEAR USDC transfer"]
+    F["Request cross-chain quote"]
+    G["Client sends source asset"]
+    H["Payment infrastructure converts asset"]
+    I["USDC delivered to freelancer on NEAR"]
+    J["Backend verifies settlement"]
+    K["Update payment and invoice"]
 
-    A --> B --> C --> D --> E
-
-    E -->|"USDC on NEAR"| F["Direct NEAR transfer"]
-    E -->|"Other supported asset"| G["Request Tidepool quote"]
-
-    F --> H["Verify destination settlement"]
-    G --> I["Generate deposit instructions"]
-    I --> J["Client sends source asset"]
-    J --> K["Tidepool processes conversion"]
-    K --> H
-
-    H --> L["Record successful payment"]
-    L --> M["Update invoice to PAID"]
+    A --> B --> C --> D
+    D -->|"USDC on NEAR"| E
+    D -->|"Other supported asset"| F
+    F --> G --> H
+    E --> I
+    H --> I
+    I --> J --> K
 ```
 
-The exact payment route depends on the selected source and destination assets.
+The payment experience should make clear:
+
+- Invoice value is shown in USD.
+- The client sees the payment amount and available payment methods.
+- Fees and estimated output should be disclosed before confirmation.
+- The freelancer receives USDC on NEAR.
+- A source-chain deposit alone does not prove successful settlement.
+
+**Supported payment assets depend on the configured payment provider and its token registry. BTC, ETH, and SOL should only be advertised when the relevant network and asset are actually supported by the integrated infrastructure.**
 
 ---
 
 # 9. Payment Architecture
 
-PayFlow currently supports two primary payment paths.
+PayFlow has two primary payment paths.
 
 ## 9.1 Direct USDC Payment on NEAR
 
-When the payer already has USDC on NEAR, there is no need for a token swap.
+When the payer already has USDC on NEAR, the client can make a direct token transfer.
 
-The payer transfers USDC directly to the freelancer's NEAR account.
+The backend must verify:
 
-```mermaid
-sequenceDiagram
-    participant P as Payer
-    participant UI as Payment Page
-    participant API as PayFlow Backend
-    participant NEAR as NEAR Blockchain
-    participant DB as PostgreSQL
+1. Transaction success and finality.
+2. Correct USDC token contract.
+3. Correct recipient.
+4. Correct transfer amount.
+5. Transaction uniqueness.
+6. Payment-attempt eligibility.
 
-    P->>UI: Open invoice
-    UI->>API: Request payment details
-    API->>DB: Retrieve invoice
-    DB-->>API: Invoice information
-    API-->>UI: Display invoice amount
-
-    P->>NEAR: Transfer USDC
-    P->>API: Submit transaction hash
-    API->>NEAR: Verify transaction
-    NEAR-->>API: Transaction and receipt information
-
-    API->>API: Validate token, recipient, amount and finality
-    API->>DB: Record verified payment
-    API->>DB: Update invoice status
-    API-->>UI: Return payment status
-```
-
-The direct transfer uses the NEP-141 token transfer mechanism.
-
-The sender and receiver must satisfy the token contract's storage-registration requirements. A direct `ft_transfer` also requires the appropriate one-yoctoNEAR attachment.
+The NEP-141 token contract may require storage registration for the receiver. A direct `ft_transfer` also requires the appropriate one-yoctoNEAR attachment.
 
 ## 9.2 Cross-Chain Payment Through Tidepool
 
-When the payer holds a different asset, PayFlow uses Tidepool to provide payment instructions and conversion.
+When the client uses another supported asset, Tidepool supplies a quote and deposit instructions.
 
 Example:
 
-- Payer has wNEAR.
-- Freelancer wants USDC on NEAR.
-- Tidepool provides a deposit address and quote.
-- Payer sends the requested wNEAR amount.
-- Tidepool handles the conversion.
+- Invoice: $100.
+- Client chooses a supported asset such as ETH.
+- Tidepool provides a quote and deposit address.
+- Client sends the quoted source asset.
+- Tidepool processes the conversion.
 - Freelancer receives USDC on NEAR.
+- PayFlow verifies the destination settlement.
 
-```mermaid
-sequenceDiagram
-    participant P as Payer
-    participant UI as Payment Page
-    participant API as PayFlow Backend
-    participant T as Tidepool
-    participant DB as PostgreSQL
-    participant N as NEAR Blockchain
+The deposit address is generated by the payment infrastructure and is not necessarily the freelancer's NEAR account.
 
-    P->>UI: Select wNEAR
-    UI->>API: Request payment quote
-    API->>T: Request quote
-    T-->>API: Quote and deposit instructions
-
-    API->>DB: Create payment attempt
-    API-->>UI: Return quote and deposit address
-
-    P->>T: Send wNEAR to deposit address
-    T->>T: Process conversion
-    T->>N: Deliver USDC to freelancer
-
-    API->>T: Check intent status
-    T-->>API: Settlement status
-
-    API->>N: Verify destination USDC transfer
-    N-->>API: Transfer details
-
-    API->>DB: Record verified settlement
-    API->>DB: Update invoice status
-    API-->>UI: Display payment result
-```
-
-The deposit address is generated by the payment infrastructure. It is not necessarily the freelancer's NEAR account.
-
-**Important:** A source-chain deposit transaction does not, by itself, prove that the freelancer received USDC.
+**A source-chain deposit transaction does not, by itself, prove that the freelancer received USDC.**
 
 ---
 
-# 10. API Architecture
+# 10. Refund Architecture and Current Deferred Issue
 
-The frontend communicates with the backend using REST API requests.
+## 10.1 Intended Refund Design
 
-The frontend API base URL is configured through:
+The refund flow is designed around the original payment details.
 
-`NEXT_PUBLIC_API_URL`
+- Refunds are available for eligible successful payments and duplicate settlements.
+- The payer's original network and wallet address are persisted during payment.
+- The freelancer sends the full USDC amount received on NEAR.
+- Cross-chain routing converts that USDC into USDC on the original payer network.
+- The expected destination amount is displayed before approval.
+- Fees and routing differences must be disclosed.
+- Refund success is based on verified destination settlement, not merely wallet submission.
 
-Example local configuration:
+For cross-chain refunds, a Tidepool quote uses an exact-input approach so the full source amount is used.
 
-```env
-NEXT_PUBLIC_API_URL=http://127.0.0.1:8000/api
-NEXT_PUBLIC_FREELANCER_ID=your-wallet.testnet
-```
+## 10.2 Work Completed
 
-The backend exposes the following API groups:
+- Added payer address, network, asset, and asset-decimal persistence to payment attempts.
+- Added refund database models and refund transaction records.
+- Added refund quote creation and approval flow.
+- Added full-source-amount refund quote validation.
+- Added destination USDC token lookup through the Tidepool token registry.
+- Added protection against creating multiple active refunds for one payment attempt.
+- Added refund transaction submission and reconciliation workflows.
+- Added NEAR USDC receiver registration for cross-chain deposit addresses.
+- Updated transaction verification to support the required storage-registration and transfer actions.
+- Added refund history to the existing payment dashboard rather than creating a separate refunds page.
+- Added refund ID display and recovery actions.
+- Tested a cross-chain refund on Base Sepolia testnet.
 
-| API group | Responsibility |
-|---|---|
-| `/api/clients/` | Client creation, listing, updating and deletion |
-| `/api/invoices/` | Invoice creation and management |
-| `/api/payments/` | Payment attempts and payment operations |
-| `/api/reports/` | Reporting and statistics |
-| `/api/relayer/` | Relayer-related operations |
+## 10.3 Outstanding Refund Issue — Deferred
 
-### Example: Create a client
+<ins>Current state: one cross-chain refund is in `REVIEW` and has not been reconciled successfully in the PayFlow database.</ins>
 
-`POST /api/clients/?freelancer_id=your-wallet.testnet`
+The Tidepool status response for the test refund reported:
 
-Request:
+- Provider status: `SUCCESS`.
+- Source amount: `0.500000 USDC`.
+- Reported destination output: `0.498700 USDC`.
+- Base Sepolia payout transaction:
+  `0xe2e5dc3df07a5ec514b5bfcb22e2afb918991b3e0f3b6f12af5c2cc75c35a117`.
 
-```json
+However, backend reconciliation rejected the provider response because the original correlation ID was read from the wrong object.
+
+### Identified code issue
+
+The original quote is stored with this structure:
+
+```python
 {
-  "name": "Acme Studio",
-  "email": "client@example.com",
-  "company": "Acme",
-  "notes": "Website development client"
+    "quote": {...},
+    "signature": "...",
+    "timestamp": "...",
+    "quoteRequest": {...},
+    "correlationId": "..."
 }
 ```
 
-### Example: List clients
+The helper:
 
-`GET /api/clients/?freelancer_id=your-wallet.testnet`
+```python
+def _get_quote_details(refund):
+    response = refund.quote_response or {}
+    quote = response.get("quote", response)
 
-### Example: Create an invoice
-
-`POST /api/invoices/`
-
-Conceptual request:
-
-```json
-{
-  "freelancer_id": "your-wallet.testnet",
-  "client_name": "Acme Studio",
-  "client_email": "client@example.com",
-  "due_date": null,
-  "items": [
-    {
-      "description": "Website development",
-      "quantity": "2",
-      "unit_price": "50.00"
-    }
-  ]
-}
+    return response, quote
 ```
 
-The resulting invoice total is USD 100.
+returns the outer response separately from the nested quote.
+
+The existing reconciliation check incorrectly reads:
+
+```python
+original_quote.get("correlationId")
+```
+
+The identified correction is to read:
+
+```python
+original_response.get("correlationId")
+```
+
+### Additional identified issue
+
+The provider response contains both NEAR execution transaction hashes and the destination Base payout hash.
+
+The current implementation selects the first destination transaction entry. This can record a NEAR transaction as the Base settlement transaction.
+
+The reconciliation code must select the actual destination-chain payout transaction using network-aware validation.
+
+### Current limitations
+
+- The existing refund is still marked `REVIEW`.
+- The database has no successful refund transaction record for this refund.
+- The correlation ID extraction correction has been identified but still needs to be applied and tested.
+- The destination transaction selection needs correction.
+- A controlled recovery path is needed for refunds already in `REVIEW`.
+- The provider response included an HTTP 429 note; provider/API reliability and retry behavior should also be investigated.
+
+**Deferred decision:** No additional transfer or new refund quote should be created for this existing refund while the reconciliation issue remains unresolved. The refund should not be manually marked `SUCCESS` without passing the required verification checks.
 
 ---
 
-# 11. Security and Payment Verification
+# 11. Security and Payment Integrity
 
 Payment verification is one of the most important parts of PayFlow.
 
-A transaction hash submitted by a payer must never be treated as proof of payment by itself.
-
-A transaction hash is an untrusted reference that the backend must independently verify.
+A submitted transaction hash must never be treated as proof of payment by itself.
 
 ## 11.1 Potential Attacks
 
 | Attack | Description |
 |---|---|
-| Fake transaction hash | Payer submits a fabricated or unrelated hash |
-| Replay attack | Same transaction is submitted multiple times |
-| Wrong recipient | Transfer is sent to an address other than the freelancer |
-| Wrong token | Payer transfers an unsupported token |
-| Underpayment | Received amount is lower than the invoice total |
-| Unconfirmed transaction | Transaction has not reached the required finality |
-| Double crediting | Same successful transaction is applied to multiple invoices |
+| Fake transaction hash | Payer submits an unrelated or fabricated hash |
+| Replay attack | Same transaction is submitted more than once |
+| Wrong recipient | Transfer is sent to an unintended account |
+| Wrong token | Unsupported token is transferred |
+| Underpayment | Received amount is lower than required |
+| Unconfirmed transaction | Transaction has not reached required finality |
+| Double crediting | One settlement is credited more than once |
+| Cross-user access | User accesses another freelancer's records |
+| Duplicate refund | Multiple refunds are initiated for one payment |
 
-## 11.2 Recommended Verification Process
+## 11.2 Required Verification
 
-For direct NEAR USDC payments, the backend should:
+For direct NEAR USDC payments:
 
-1. Receive the submitted transaction hash.
-2. Query a trusted NEAR RPC endpoint.
-3. Verify transaction success and finality.
-4. Inspect the actual token transfer.
-5. Verify the USDC token contract.
-6. Verify the recipient account.
-7. Verify the received amount.
-8. Check that the transaction has not already been credited.
-9. Record the verified transaction.
-10. Update the payment attempt and invoice atomically.
+1. Query a trusted NEAR RPC endpoint.
+2. Verify transaction success and finality.
+3. Inspect the actual token transfer.
+4. Verify the USDC token contract.
+5. Verify recipient and amount.
+6. Check transaction uniqueness.
+7. Record the verified transaction.
+8. Update payment and invoice state atomically.
 
-For Tidepool payments, the backend should:
+For cross-chain payments:
 
-1. Associate the payment attempt with the relevant Tidepool intent/quote.
-2. Track the intent using the provider's status API.
-3. Verify successful destination settlement.
-4. Verify the destination USDC transfer.
-5. Check recipient and amount.
-6. Prevent duplicate settlement processing.
-7. Update the invoice only after successful settlement.
+1. Associate the payment attempt with its original provider quote and intent.
+2. Retrieve provider execution status.
+3. Verify the provider response against the original quote.
+4. Independently verify destination settlement where supported.
+5. Verify destination token, recipient, and amount.
+6. Check destination transaction uniqueness.
+7. Update the payment attempt and invoice atomically.
 
-## 11.3 Replay Protection
+For refunds, the same principle applies: a wallet submission or provider status alone must not cause an unverified refund to be marked successful.
 
-A database uniqueness constraint should prevent a blockchain transaction from being credited more than once.
+## 11.3 Replay Protection and Atomic Settlement
 
-Conceptually:
+The database should prevent a blockchain transaction from being credited more than once.
 
-```sql
-UNIQUE (chain, tx_hash)
-```
+A uniqueness constraint should be used for the appropriate chain and transaction identifier.
 
-Payment processing should also be idempotent.
+Payment processing should be idempotent. Reprocessing the same verified transaction must not create another payment credit.
 
-If the same transaction is processed repeatedly, the result must remain the same: one payment credit, not multiple credits.
-
-Payment verification and invoice updates should be performed in a database transaction with appropriate concurrency protection.
-
-## 11.4 Important Implementation Status
-
-The current prototype has working payment flows on testnet, including direct USDC payment and wNEAR conversion.
-
-The stronger independent backend verification, replay protection, and atomic payment-crediting safeguards described above are security requirements to complete and test before production use. They should not be assumed to be fully implemented merely because the testnet payment flow works.
+Payment-attempt and invoice status changes should be protected by database transactions and appropriate row-level locking or concurrency controls.
 
 ---
 
-# 12. Environment Configuration
+# 12. API Architecture
+
+The frontend communicates with the backend through REST APIs.
+
+The API base URL is configured through `NEXT_PUBLIC_API_URL`.
+
+| API group | Responsibility |
+|---|---|
+| `/api/clients/` | Client management |
+| `/api/invoices/` | Invoice creation and management |
+| `/api/payments/` | Payment attempts and operations |
+| `/api/refunds/` | Refund quotes, approval, submission, and reconciliation |
+| `/api/reports/` | Reporting and statistics |
+| `/api/relayer/` | Relayer-related operations |
+
+The backend should enforce authentication, ownership, and request validation for protected endpoints.
+
+API documentation should be checked against the current FastAPI route definitions before being used as an integration contract.
+
+---
+
+# 13. Environment Configuration
 
 ## Frontend
 
@@ -779,7 +801,6 @@ Example `.env.local`:
 
 ```env
 NEXT_PUBLIC_API_URL=http://127.0.0.1:8000/api
-NEXT_PUBLIC_FREELANCER_ID=your-wallet.testnet
 ```
 
 ## Backend
@@ -793,11 +814,13 @@ USDC_DECIMALS=6
 NEAR_RPC_URL=https://rpc.testnet.near.org
 ```
 
-Keep private credentials and API secrets in backend environment variables. Never expose private keys or privileged credentials through `NEXT_PUBLIC_` variables.
+Actual configuration variable names should be verified against `backend/app/core/config.py`.
+
+Private credentials and API secrets must remain in backend environment variables. Never expose private keys or privileged credentials through `NEXT_PUBLIC_` variables.
 
 ## Token Amounts
 
-Token amounts must be handled using integer base units or exact decimal arithmetic.
+Token amounts must use integer base units or exact decimal arithmetic.
 
 | Token | Decimals |
 |---|---:|
@@ -812,72 +835,235 @@ For wNEAR:
 
 `1 wNEAR = 1,000,000,000,000,000,000,000,000 base units`
 
-Floating-point arithmetic should not be used for settlement calculations.
+Floating-point arithmetic must not be used for settlement calculations.
 
 ---
 
-# 13. Current Development and Testing Status
+# 14. Development Progress
 
-## Working functionality
+## Completed or demonstrated
 
-- [x] FastAPI backend and PostgreSQL integration.
-- [x] Next.js frontend and dashboard.
-- [x] Client creation and listing.
-- [x] Client deletion.
+- [x] Next.js frontend and FastAPI backend.
+- [x] PostgreSQL integration.
+- [x] Dashboard and invoice management.
+- [x] Client creation, listing, and deletion.
 - [x] Client selection during invoice creation.
-- [x] USD-denominated invoice creation.
-- [x] Invoice line items and total calculation.
+- [x] USD-denominated invoices and line items.
 - [x] Public invoice payment page.
-- [x] Direct USDC on NEAR payment flow tested.
-- [x] wNEAR-to-USDC Tidepool testnet conversion tested.
+- [x] Payment attempt records.
+- [x] Direct NEAR USDC payment flow tested.
+- [x] Tidepool testnet cross-chain payment flow tested.
+- [x] wNEAR-to-USDC testnet conversion demonstrated.
 - [x] Freelancer USDC destination settlement observed.
-- [x] Invoice marked paid in a successful test.
-- [x] Payment and invoice UI integration.
+- [x] Payment and invoice dashboard integration.
+- [x] Payer details persisted for refund routing.
+- [x] Refund quote and approval workflow implemented.
+- [x] Cross-chain refund wallet transfer tested.
+- [x] Receiver storage registration handled for cross-chain refund deposits.
+- [x] Refund history integrated into the payment dashboard.
 
-## Remaining development priorities
+## In progress or requiring further verification
 
-- [ ] Complete independent backend verification for direct NEAR transfers.
-- [ ] Complete Tidepool intent and destination settlement verification.
-- [ ] Add transaction replay protection.
-- [ ] Add idempotent payment processing.
-- [ ] Add atomic payment and invoice status updates.
+- [ ] Complete identity and access-control audit.
+- [ ] Complete payment verification and settlement regression testing.
+- [ ] Validate all duplicate-settlement scenarios.
+- [ ] Verify transaction uniqueness constraints and idempotency.
+- [ ] Verify atomic payment and invoice updates under concurrency.
+- [ ] Complete refund reconciliation and recovery.
+- [ ] Correct destination-chain transaction selection.
+- [ ] Test refund failure, retry, and review scenarios.
 - [ ] Test underpayment and overpayment handling.
-- [ ] Test concurrent payment attempts.
-- [ ] Improve payment status refresh and error handling.
-- [ ] Complete end-to-end regression testing.
-- [ ] Review production security, authentication and authorization.
-- [ ] Add proper invoice-to-client database relationship if required.
+- [ ] Review API rate limits and request validation.
+- [ ] Complete database migration and backup procedures.
+- [ ] Add structured logging and monitoring.
 
 ---
 
-# 14. Future Improvements
+# 15. PayFlow Security Roadmap
 
-Potential improvements after the core prototype is stable:
+The roadmap is divided into six phases. Priorities indicate implementation order and importance.
 
-1. Wallet integration for a smoother payer experience.
-2. Automatic transaction monitoring and settlement updates.
-3. Email notifications for invoice creation and payment completion.
-4. Recurring invoices.
-5. Invoice PDF generation.
-6. Client-specific invoice history.
-7. Multiple freelancer accounts and authentication.
-8. Production-grade payment provider integration.
-9. Additional supported chains and assets.
-10. Better reconciliation and refund handling.
+## Phase 1 — Identity and Access
+
+<ins>Priority: P0</ins>
+
+The objective is to ensure users can only access and modify their own application data.
+
+Tasks:
+
+- Wallet authentication.
+- Session management.
+- Freelancer ownership checks.
+- Secure invoice and client CRUD.
+- Protect reports and dashboard endpoints.
+- Enforce ownership on payment and refund operations.
+- Verify that public invoice access exposes only intended information.
+
+**Exit criteria:** Authenticated users cannot access or modify another freelancer's private records.
+
+**Status:** Requires a complete end-to-end security audit before being considered closed.
+
+## Phase 2 — Payment Integrity
+
+<ins>Priority: P0</ins>
+
+The objective is to ensure every payment credited by PayFlow represents a real, verified settlement.
+
+Tasks:
+
+- Strengthen direct NEAR transaction verification.
+- Independently verify cross-chain settlement.
+- Add database constraints.
+- Implement atomic settlement.
+- Improve payment state transitions.
+- Prevent duplicate transaction crediting.
+- Handle multiple successful payment attempts for one invoice.
+- Improve payment reconciliation.
+- Complete refund reconciliation and recovery.
+
+**Exit criteria:** Payments and refunds are only marked successful after their settlement evidence has been verified. Duplicate processing cannot create duplicate credits.
+
+**Status:** In progress. Payment and refund flows have been implemented and tested on testnet, but additional verification and reconciliation work remains.
+
+## Phase 3 — Infrastructure Protection
+
+<ins>Priority: P1</ins>
+
+The objective is to protect the backend and its supporting infrastructure.
+
+Tasks:
+
+- Rate limiting.
+- API validation.
+- Secret management.
+- Database migrations and backups.
+- Logging and monitoring.
+- Provider timeout and retry handling.
+- Secure error handling.
+- Database connection and availability management.
+
+**Exit criteria:** The application has documented infrastructure controls, recoverable database backups, and sufficient observability for operational failures.
+
+**Status:** Planned.
+
+## Phase 4 — Contract and Relayer
+
+<ins>Priority: P1</ins>
+
+The objective is to strengthen the on-chain and relayer components.
+
+Tasks:
+
+- Improve settlement validation.
+- Strengthen delegate-action verification.
+- Secure admin authority.
+- Test replay protection.
+- Review relayer permissions and transaction authorization.
+- Test failure and recovery scenarios.
+
+**Exit criteria:** Contract and relayer operations have verified authorization, replay protection, and documented security tests.
+
+**Status:** Planned.
+
+## Phase 5 — Mainnet Migration
+
+<ins>Priority: P2</ins>
+
+The objective is to move from sandbox infrastructure to production-ready payment infrastructure.
+
+Tasks:
+
+- Official 1Click integration.
+- Mainnet USDC configuration.
+- Contract deployment.
+- Production relayer.
+- Mainnet integration testing.
+- Production RPC and provider configuration.
+- Review network-specific fees and token support.
+
+**Exit criteria:** All production components are deployed and tested with controlled mainnet transactions.
+
+**Status:** Not started. Current implementation uses testnet infrastructure.
+
+## Phase 6 — Controlled Launch
+
+<ins>Priority: Final</ins>
+
+The objective is to launch PayFlow gradually with operational and security safeguards.
+
+Tasks:
+
+- External security review.
+- Small-value real payments.
+- Reconciliation monitoring.
+- Gradual rollout.
+- Incident response procedures.
+- Operational monitoring and support.
+
+**Exit criteria:** External review findings are addressed, real-payment monitoring is operational, and the rollout has defined safety limits.
+
+**Status:** Not started.
 
 ---
 
-# 15. Conclusion
+# 16. Recommended Next Steps
 
-PayFlow simplifies cross-chain cryptocurrency payments by separating the freelancer's invoicing experience from the complexity of blockchain transactions.
+The following order is recommended when development resumes.
 
-Freelancers work with familiar USD invoices, while clients can pay using supported crypto assets. The payment infrastructure handles conversion and settles the freelancer in USDC on NEAR.
+| Order | Task | Reason |
+|---:|---|---|
+| 1 | Audit Phase 1 identity and access controls | User isolation is foundational |
+| 2 | Complete Phase 2 payment verification | Prevent incorrect payment crediting |
+| 3 | Fix and retest refund reconciliation | Existing refund flow has an unresolved REVIEW case |
+| 4 | Test duplicate and concurrent settlements | Prevent double crediting |
+| 5 | Test payment and refund failure recovery | Ensure safe state transitions |
+| 6 | Add Phase 3 infrastructure controls | Improve production readiness |
+| 7 | Complete contract and relayer review | Protect privileged on-chain operations |
+| 8 | Integrate production payment infrastructure | Prepare for mainnet |
+| 9 | Perform external review and controlled launch | Reduce launch risk |
 
-The prototype demonstrates the two primary payment paths:
+## Immediate Deferred Work
 
-- Direct USDC transfers on NEAR.
-- Cross-chain conversion through Tidepool.
+The following items should be retained for the next development session:
 
-The next major engineering priority is strengthening backend payment verification, replay protection, and settlement accounting so that a transaction is credited only when the correct funds have actually reached the intended recipient.
+1. Fix the original refund correlation ID extraction in `refund_reconciliation.py`.
+2. Select the correct destination-chain transaction hash instead of the first provider transaction entry.
+3. Implement a safe recovery path for refunds already in `REVIEW`.
+4. Reconcile the existing Base Sepolia refund without submitting another transfer.
+5. Test refund success, failure, retry, and duplicate-submission behavior.
+6. Confirm the final refund transaction is stored correctly and reflected in the dashboard.
+
+---
+
+# 17. Product UX Requirements
+
+These requirements should guide future frontend and backend changes.
+
+1. Invoices are denominated in USD.
+2. Freelancers receive USDC on NEAR.
+3. Clients can pay using supported assets and networks.
+4. PayFlow handles conversion and routing automatically.
+5. Freelancers should not have to choose a refund destination network or enter the payer's address manually.
+6. The dashboard should not require knowledge of token symbols, blockchain explorers, bridges, or gas.
+7. Technical transaction information should be optional and secondary.
+8. Fees and expected payment/refund amounts should be clear before approval.
+9. Pending, processing, successful, failed, and review states must be communicated clearly.
+10. A submitted transaction must never be presented as a completed settlement before verification.
+
+The goal is to make PayFlow feel like a normal invoicing product, not a cryptocurrency trading interface.
+
+---
+
+# 18. Conclusion
+
+PayFlow aims to simplify international invoicing and cross-chain cryptocurrency payments by separating the user experience from blockchain complexity.
+
+Freelancers create familiar USD invoices and receive USDC on NEAR. Clients can pay using supported assets and networks. PayFlow handles routing, conversion, and settlement behind the scenes.
+
+The prototype demonstrates direct NEAR USDC payments, cross-chain testnet conversion, payment tracking, and a refund workflow.
+
+The next engineering priority is to complete the security roadmap, especially identity isolation, payment integrity, independent settlement verification, and reliable refund reconciliation.
+
+Production deployment must wait until the security and infrastructure requirements have been tested and satisfied.
 
 **PayFlow — Invoices in dollars. Payments across chains. Settlement in USDC.**

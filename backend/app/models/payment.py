@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Boolean, JSON, UniqueConstraint
+from sqlalchemy import Integer, Column, String, DateTime, ForeignKey, Boolean, JSON, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -44,6 +44,11 @@ class PaymentAttempt(Base):
     received_amount = Column(String(100))
 
     refund_address = Column(String(255))
+
+    payer_address = Column(String(255), nullable=True)
+    payer_network = Column(String(50), nullable=True)
+    payer_asset = Column(String(255), nullable=True)
+    payer_asset_decimals = Column(Integer, nullable=True)
 
     status = Column(
         String(40),
