@@ -98,6 +98,14 @@ See the [Developer Documentation](docs/DEVELOPERS.md) for setup and configuratio
 - Mainnet deployment and production security review remain future work.
 - Testnet assets do not represent real-world funds.
 
+## Acknowledgements & Third-Party Infrastructure
+
+PayFlow builds on the work of these projects:
+
+- **[Tidepool](https://www.usetidepool.tech/)** — Community-built NEAR Intents 1Click API sandbox used for testnet cross-chain quotes, deposits, swaps, and settlement testing. Special thanks to its creator, [@realchriswilder](https://github.com/realchriswilder).
+- **[Pagoda Relayer](https://github.com/near/pagoda-relayer-rs)** — NEP-366 meta-transaction relayer used to sponsor gas for PayFlow's settlement-recording contract interactions.
+- **[NEAR Intents](https://near.org/)** — The intent-based cross-chain infrastructure underlying PayFlow's payment flow.
+
 ## Hackathon Track
 
 Built for the NEAR hackathon **Real-World Money** track (`realworld`).
