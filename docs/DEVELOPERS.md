@@ -1,405 +1,426 @@
-# PayFlow — Developer Documentation
+# PayFlow — Developer & Judge Reproduction Guide
 
-This document describes PayFlow's architecture, development environment, payment and refund workflows, database design, and current implementation status.
+> **Project:** PayFlow — crypto invoicing for freelancers who don't care about crypto  
+> **NEAR Hackathon track:** Real-World Money (`realworld`)  
+> **Current target:** NEAR testnet + Tidepool sandbox  
+> **Status:** Prototype. Do not use real funds.
 
-> **Status:** NEAR testnet prototype. Direct NEAR and cross-chain payment flows have been exercised successfully. Direct NEAR and cross-chain refunds have also been completed successfully. This is not a production deployment.
+This guide is written for a developer or automated judge starting from a clean clone. It gives explicit commands and observable outcomes. The detailed route contract is in [`API_REFERENCE.md`](API_REFERENCE.md); the demo script is in [`DEMO_GUIDE.md`](DEMO_GUIDE.md).
 
-## 1. Project Objective
+## 1. What to run
 
-PayFlow aims to simplify cryptocurrency payments for freelancers.
+PayFlow is made of four separately configured pieces:
 
-The application allows freelancers to:
+1. **Next.js frontend** — freelancer dashboard and public invoice payment page.
+2. **FastAPI backend** — authentication, invoices, payment attempts, reconciliation, refunds and CSV export.
+3. **PostgreSQL** — persistent application and transaction records.
+4. **NEAR testnet services** — PayFlow Rust contract, NEAR RPC and Pagoda Relayer. Tidepool sandbox supplies token discovery, quotes, deposit submission and cross-chain status.
 
-- Create invoices denominated in USD.
-- Share public payment links.
-- Receive settlement in USDC on NEAR.
-- Track invoice, payment, and refund statuses.
-- Maintain payment records for bookkeeping.
+The Pagoda Relayer is an external Rust service. It is not bundled as an executable in this repository. The backend calls its `POST /send_meta_tx` endpoint.
 
-Clients should be able to pay using supported assets and networks without needing to understand the underlying settlement process.
+## 2. Prerequisites
 
-The project targets the NEAR hackathon **Real-World Money** track (`realworld`).
+- Git
+- Python 3.11+ (use the version compatible with the backend lock/dependency environment)
+- Node.js 20+ and npm
+- PostgreSQL
+- Rust toolchain (`rustup`, `cargo`) for contract and relayer builds
+- Docker Compose (recommended for the Pagoda Relayer)
+- A NEAR testnet freelancer account, a separate testnet contract-admin account/key, and a funded relayer account/key
+- Tidepool sandbox access and any required API key
 
-## 2. Technology Stack
+Do not commit `.env`, wallet key files, relayer `account_keys`, database passwords, or API keys.
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js, React, TypeScript, Tailwind CSS |
-| Backend | Python, FastAPI, Pydantic |
-| ORM | SQLAlchemy |
-| Database | PostgreSQL |
-| Smart contract | Rust, near-sdk |
-| Blockchain | NEAR Protocol |
-| Payment integration | Tidepool sandbox |
+## 3. Clone and inspect
 
-## 3. Repository Structure
+```bash
+git clone <PUBLIC_PAYFLOW_REPOSITORY_URL>
+cd <REPOSITORY_DIRECTORY>
+git status --short
+```
+
+Expected: a clean working tree after clone.
+
+Repository areas:
 
 ```text
-.
-├── backend/
-│   └── app/
-│       ├── api/
-│       ├── core/
-│       ├── integrations/
-│       ├── models/
-│       └── schemas/
-├── frontend/
-│   ├── app/
-│   ├── components/
-│   ├── hooks/
-│   ├── lib/
-│   └── types/
-├── contracts/
-│   └── payflow/
-└── docs/
+backend/                 FastAPI application, SQLAlchemy models, migrations
+frontend/                Next.js application
+contracts/payflow/       Rust NEAR contract
+backend/migrations/      SQL schema changes
+docs/                    Developer, API and demo documentation
 ```
 
-This is a conceptual overview rather than an exhaustive file listing.
+## 4. PostgreSQL
 
-## 4. Network and Provider Configuration
+Create a database named `payflow` (or choose another name and use it consistently in `DATABASE_URL`).
 
-The current implementation uses NEAR testnet and Tidepool sandbox.
+Example using `createdb`:
 
-| Configuration | Value |
-|---|---|
-| Tidepool base URL | `https://www.usetidepool.tech` |
-| NEAR network | `testnet` |
-| NEAR RPC | `https://rpc.testnet.near.org` |
-| USDC asset ID | `nep141:usdc.tidepool-sandbox.testnet` |
-| USDC decimals | `6` |
-| Frontend local URL | `http://localhost:3000` |
-| Backend local URL | `http://localhost:8000` |
-| Frontend API prefix | `/api` |
-
-### Amount conversion
-
-USDC uses six decimal places.
-
-```python
-usdc_base_units = usd_amount * 1_000_000
+```bash
+createdb payflow
 ```
 
-For example:
+Or with `psql`:
 
-```text
-USD 1.00 = 1000000 USDC base units
+```sql
+CREATE DATABASE payflow;
 ```
 
-Use decimal arithmetic for monetary calculations. Avoid binary floating-point arithmetic for financial amounts.
+The backend imports all SQLAlchemy models and calls `Base.metadata.create_all()` at startup for the model-defined base tables. The SQL files in `backend/migrations/` are incremental changes and must be applied to a database whose baseline tables exist. Do not blindly re-run non-idempotent `ALTER TABLE` migrations against an already migrated database.
 
-## 5. Local Development Setup
+For a fresh database, first start the backend once to create the model-defined base tables, stop it, then apply the migration files in dependency order:
 
-### Prerequisites
+```bash
+cd backend
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/wallet_auth.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/payment_integration.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/refund_schema.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/alter_refund.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/one_click_refund.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/refund_quote_data_constraint.sql
+```
 
-- Node.js compatible with the frontend dependencies.
-- Python compatible with the backend dependencies.
-- PostgreSQL.
-- NEAR testnet account and wallet.
-- Access to the Tidepool sandbox.
+If the database already contains these columns/tables, inspect the schema before applying. `alter_refund.sql` and `one_click_refund.sql` use `ALTER TABLE` and are not safe to apply twice.
 
-### Backend setup
+## 5. Backend setup
 
-1. Navigate to `backend/`.
-2. Create and activate a Python virtual environment.
-3. Install dependencies from the project's dependency manifest.
-4. Create the PostgreSQL database.
-5. Configure the backend environment.
-6. Apply the project's SQL schema and migrations.
-7. Start the FastAPI application using the configured ASGI entry point.
+```bash
+cd backend
+python -m venv .venv
+```
 
-### Frontend setup
+Activate the environment:
 
-1. Navigate to `frontend/`.
-2. Install dependencies.
-3. Configure the backend API URL.
-4. Start the Next.js development server.
-5. Open `http://localhost:3000`.
-6. Connect a NEAR testnet wallet.
+```bash
+# macOS / Linux
+source .venv/bin/activate
 
-The frontend API URL has used:
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+```
+
+Install dependencies:
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Create `backend/.env` from `backend/.env.example` and set the real local values. Minimum settings:
+
+```env
+DATABASE_URL=postgresql+psycopg://postgres:<PASSWORD>@localhost:5432/payflow
+
+NEAR_NETWORK=testnet
+NEAR_RPC_URL=https://rpc.testnet.near.org
+
+PAYFLOW_CONTRACT_ID=<deployed-payflow-contract>.testnet
+PAYFLOW_CONTRACT_ADMIN_ID=<contract-admin-account>.testnet
+PAYFLOW_ADMIN_FUNCTION_CALL_PUBLIC_KEY=ed25519:<FUNCTION_CALL_PUBLIC_KEY>
+PAYFLOW_ADMIN_FUNCTION_CALL_PRIVATE_KEY=ed25519:<FUNCTION_CALL_PRIVATE_KEY>
+
+RELAYER_URL=http://127.0.0.1:3030
+RELAYER_API_KEY=
+RELAYER_MAX_GAS=100000000000000
+INTERNAL_API_KEY=<random-long-secret>
+
+NEAR_INTENTS_BASE_URL=https://www.usetidepool.tech
+NEAR_INTENTS_API_KEY=<sandbox-key-if-required>
+
+USDC_ASSET_ID=nep141:usdc.tidepool-sandbox.testnet
+USDC_DECIMALS=6
+
+FRONTEND_URL=http://localhost:3000
+AUTH_COOKIE_SECURE=false
+AUTH_SESSION_DAYS=7
+```
+
+**Provider URL check before demo:** `backend/.env.example` currently contains `https://1click.chaindefuser.com`, while the repository's Tidepool integration guide and tested sandbox configuration use `https://www.usetidepool.tech`. The integration client calls Tidepool-style `/v0/tokens`, `/v0/quote`, `/v0/deposit/submit` and `/v0/status` paths. Use the provider base URL matching the provider API you actually configured; do not mix a production 1Click host with Tidepool sandbox credentials or assumptions.
+
+Start the backend:
+
+```bash
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Expected checks:
+
+```bash
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/
+```
+
+Expected JSON:
+
+```json
+{"status":"healthy"}
+```
+
+and:
+
+```json
+{"name":"PayFlow","status":"running"}
+```
+
+OpenAPI documentation:
+
+- Swagger UI: `http://127.0.0.1:8000/docs`
+- OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
+
+## 6. Frontend setup
+
+In a second terminal:
+
+```bash
+cd frontend
+npm ci
+```
+
+Create `frontend/.env.local`:
 
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:8000/api
 ```
 
-### Backend environment
+Run:
 
-The backend settings include configuration for:
-
-- NEAR network and RPC URL.
-- PayFlow contract ID and optional admin ID.
-- Relayer URL and credentials.
-- Internal API authentication.
-- Relayer gas limit.
-- Tidepool/provider configuration.
-- USDC asset ID and decimals.
-- Frontend URL.
-- Authentication cookie and session behavior.
-
-Known testnet values:
-
-```env
-NEAR_NETWORK=testnet
-NEAR_RPC_URL=https://rpc.testnet.near.org
-USDC_ASSET_ID=nep141:usdc.tidepool-sandbox.testnet
-USDC_DECIMALS=6
-FRONTEND_URL=http://localhost:3000
+```bash
+npm run dev
 ```
 
-These are configuration examples. Confirm the exact accepted variable names in `backend/app/core/config.py` before creating the local `.env` file.
+Open `http://localhost:3000`.
 
-Never commit private keys, API keys, database passwords, or session secrets.
+For a production build check:
 
-## 6. Architecture
+```bash
+npm run build
+npm run start
+```
 
-### Frontend
+The frontend uses cookie-based sessions (`credentials: "include"`). Keep `FRONTEND_URL` in the backend aligned with the browser origin. Local development uses `AUTH_COOKIE_SECURE=false`; production must use HTTPS and secure cookies.
 
-The Next.js application provides:
+## 7. Build and deploy the PayFlow contract
 
-- Freelancer dashboard.
-- Invoice creation and listing.
-- Invoice management views.
-- Public invoice payment page.
-- Payment history.
-- Client management.
-- Settings and wallet authentication.
-- Shared API utilities and UI components.
+The contract source is `contracts/payflow/`. It uses `near-sdk = 5.17.0`.
 
-The public payment page is available under:
+```bash
+cd contracts/payflow
+cargo test
+cargo build --target wasm32-unknown-unknown --release
+```
+
+If the wasm target is not installed:
+
+```bash
+rustup target add wasm32-unknown-unknown
+```
+
+The resulting wasm is normally:
 
 ```text
-/pay/[invoiceId]
+target/wasm32-unknown-unknown/release/payflow.wasm
 ```
 
-### Backend
+Deploy and initialize using the NEAR CLI version available to the operator. Example shape (replace account IDs and use a testnet key you control):
 
-The FastAPI application handles:
+```bash
+near contract deploy <PAYFLOW_CONTRACT_ID> use-file target/wasm32-unknown-unknown/release/payflow.wasm
+near contract call-function as-transaction <PAYFLOW_CONTRACT_ID> new json-args '{"admin":"<PAYFLOW_CONTRACT_ADMIN_ID>"}' prepaid-gas '100 Tgas' attached-deposit '0 NEAR' sign-as <DEPLOYER_ACCOUNT>.testnet network-config testnet sign-with-plaintext-private-key send
+```
 
-- Wallet authentication.
-- Invoice creation and retrieval.
-- Payment asset discovery.
-- Payment attempt creation and processing.
-- Payment settlement and reconciliation.
-- Refund quote generation.
-- Refund approval and submission.
-- Refund reconciliation.
+CLI syntax varies by installed `near` version; if this command shape is not supported, use the equivalent `near deploy` and `near call` commands for that CLI release. Do not deploy or reinitialize a contract that already contains project data.
 
-SQLAlchemy models persist the application data in PostgreSQL.
+The contract's `record_settlement` method is admin-only and stores one settlement record per invoice ID. It stores a record submitted by the trusted backend after reconciliation; it is not an independent cross-chain proof verifier.
 
-### Smart contract and Pagoda Relayer
+## 8. Build and run the Pagoda Relayer
 
-The project includes a Rust smart contract built with `near-sdk` and uses NEP-366 meta-transactions for sponsored contract interactions.
+### Why it is a separate dependency
 
-PayFlow integrates with the **Pagoda Relayer** to submit supported meta-transactions on behalf of users, reducing the need for freelancers to hold NEAR merely to interact with the PayFlow contract.
+PayFlow uses NEP-366 meta-transactions. The backend constructs and signs a delegate action for the configured admin function-call key, then sends it to the Pagoda Relayer. The relayer pays NEAR gas and broadcasts the transaction.
 
-The relayer integration is part of the transaction sponsorship architecture. It does not mean every wallet operation or ordinary NEAR transfer is gasless; sponsorship applies to supported contract interactions.
+Official upstream repository: <https://github.com/near/pagoda-relayer-rs>
 
-For local development and integration details, refer to the Pagoda Relayer implementation and its configuration alongside PayFlow's relayer integration.
+The upstream project is not included in this source archive. For judge reproducibility, pin it as a public Git submodule (recommended) or record the exact upstream commit and provide the same clone/build steps. Do not rely on an unpinned `develop` branch for a final judging run.
 
-## 7. Authentication
+### Add a pinned public submodule before publishing
 
-The backend wallet authentication flow uses a challenge-and-verification process.
+Judges must clone with:
 
-1. The frontend requests an authentication challenge.
-2. The wallet signs the challenge using NEP-413.
-3. The backend verifies the signature and account access key.
-4. A server-side session is created.
-5. The session is returned through the `payflow_session` cookie.
-6. Authenticated requests include the session cookie.
+```bash
+git clone --recurse-submodules <PUBLIC_PAYFLOW_REPOSITORY_URL>
+cd <REPOSITORY_DIRECTORY>
+git submodule update --init --recursive
+```
 
-The NEP-413 message is intended for application authentication, not authorization for arbitrary transactions.
+If the submodule is not added, the equivalent manual reproduction is:
 
-The implemented challenge lifetime is five minutes. Session duration and cookie security behavior are configurable.
+```bash
+git clone https://github.com/near/pagoda-relayer-rs.git
+cd pagoda-relayer-rs
+git checkout <THE_SAME_UPSTREAM_COMMIT_SHA>
+```
 
-Production deployment must use HTTPS and secure cookie settings.
+### Configure relayer account
 
-## 8. Payment Workflow
+Create a dedicated NEAR testnet account to pay relayed gas. Fund it with testnet NEAR. The upstream relayer expects a key JSON file under `account_keys/` with `account_id`, `public_key`, and `secret_key`. The upstream README notes that a copied NEAR credentials file may use `private_key`; rename that property to `secret_key` if required by the checked-out upstream version.
 
-The payment flow follows this general sequence:
+Example shape only — never commit actual credentials:
 
-1. Freelancer creates an invoice in USD.
-2. Client opens the public payment page.
-3. Frontend retrieves available payment assets from the backend.
-4. Client selects an available payment option.
-5. Backend creates a payment attempt.
-6. Provider and blockchain operations process the payment.
-7. Backend verifies and reconciles settlement information.
-8. Invoice is marked paid after settlement is accepted.
+```json
+[
+  {
+    "account_id": "<RELAYER_ACCOUNT>.testnet",
+    "public_key": "ed25519:<PUBLIC_KEY>",
+    "secret_key": "ed25519:<PRIVATE_KEY>"
+  }
+]
+```
 
-### Direct NEAR payment
+Put this file in `vendor/pagoda-relayer-rs/account_keys/` and ensure it is ignored by Git.
 
-The direct NEAR path supports the configured NEAR USDC settlement asset.
+### Configure `config.toml`
 
-A tested NEAR-hosted ETH token-to-USDC flow is a NEAR-to-NEAR token swap. It is not an Ethereum mainnet payment.
+Start from the upstream `config.toml` and the upstream examples for the checked-out commit. Set:
 
-### Cross-chain payment
+- `port = 3030`
+- `relayer_account_id` to the dedicated funded testnet relayer account
+- `keys_filename` to the key JSON file
+- `network = "testnet"`
+- `rpc_url = "https://rpc.testnet.near.org"`
+- `use_whitelisted_contracts = true` and configure the PayFlow contract allowlist using the exact syntax in the pinned upstream examples
+- Keep the relayer receiver allowlist restrictive where supported
+- Disable optional Redis/allowance/FastAuth features unless the selected upstream config requires them
 
-The cross-chain testnet path uses Tidepool sandbox.
+Do not use a broad no-filter configuration on an internet-facing service. PayFlow's own backend validates the action, but the relayer should also be configured with the narrowest upstream allowlist available.
 
-The payment attempt records the source payment details and resulting settlement information. The backend reconciles the provider response and transaction evidence before accepting settlement.
+### Build and run (Docker Compose)
 
-Supported assets and networks depend on the provider's current configuration. Do not assume every asset or network is available.
+From `vendor/pagoda-relayer-rs/`:
 
-### Multiple payment attempts
+```bash
+docker compose build
+docker compose up -d
+docker compose logs -f relayer
+```
 
-Multiple payment attempts for an invoice are intentional.
+The upstream compose file maps port `3030` and mounts `config.toml` and `account_keys`. The upstream Dockerfile builds the Rust binary in a container. If Docker is unavailable, use the upstream native instructions:
 
-The system must preserve individual attempts and prevent an additional settlement from silently overwriting an already-paid invoice.
+```bash
+cargo build --release
+cargo run
+```
 
-Unexpected or duplicate settlements should remain separately identifiable for investigation and refund handling.
+Verify the local service is reachable before starting PayFlow's backend:
 
-## 9. Refund Workflow
+```bash
+curl -i http://127.0.0.1:3030/
+```
 
-Refunds are stored separately from the original payment.
-
-This preserves the original payment history and allows refund transactions to be tracked independently.
-
-The refund lifecycle includes:
-
-1. Request a refund quote.
-2. Validate the quote metadata and expiry.
-3. Await freelancer approval.
-4. Submit the refund using the selected route.
-5. Reconcile provider and destination transaction information.
-6. Persist the final refund status and transaction evidence.
-
-### Tested refund paths
-
-- Direct NEAR refund — successfully tested.
-- Cross-chain refund — successfully tested.
-
-The cross-chain reconciliation flow validates correlation information and provider status, identifies the destination transaction hash, and persists the refund transaction record.
-
-The refund transaction model uses a UUID primary key. Reconciliation explicitly creates this ID when inserting the transaction record.
-
-### Important refund handling
-
-- Do not submit a second refund transfer simply because a UI label appears stale.
-- If a transaction has already been submitted, continue using the existing transaction and reconciliation flow.
-- Keep the original payment record intact.
-- Record refund status and transaction evidence in refund-specific records.
-- `PROCESSING` means the refund is still in progress, not that it has succeeded.
-- Failed or review states require investigation using provider status, correlation ID, and transaction evidence.
-
-## 10. Database Design
-
-The main persisted concepts include:
-
-| Model | Purpose |
-|---|---|
-| User | Freelancer wallet identity |
-| AuthChallenge | Wallet authentication challenge |
-| UserSession | Authenticated application session |
-| Invoice | USD invoice and its lifecycle |
-| PaymentAttempt | Individual attempt to pay an invoice |
-| Transaction | Payment transaction evidence |
-| Refund | Refund lifecycle linked to the original payment |
-| RefundTransaction | Source/destination transaction evidence for a refund |
-
-The invoice stores a reference to the payment attempt accepted as settling it, along with payment timing information.
-
-Multiple payment attempts may exist for one invoice.
-
-Refund records do not replace or delete the original payment record.
-
-### Schema management
-
-Database changes are managed through SQL schema and migration scripts.
-
-`Base.metadata.create_all()` may be used as a development convenience, but it should not replace reviewed SQL migrations for production schema management.
-
-## 11. API Overview
-
-The backend API is mounted under `/api`.
-
-| Route group | Purpose |
-|---|---|
-| `/api/auth` | Wallet challenge, verification, session lookup, logout |
-| `/api/invoices` | Invoice creation, listing, public invoice data, management |
-| `/api/payments` | Token discovery, payment attempts, submission, status |
-| `/api/refunds` | Refund quotes, approval, submission, reconciliation |
-
-For example, the payment token discovery endpoint is:
+The root path may not be a health endpoint; an HTTP 404 still proves the TCP/HTTP server is reachable. Use the upstream OpenAPI UI at `http://127.0.0.1:3030/swagger-ui/` to inspect the actual endpoints for the pinned revision. The PayFlow integration specifically calls:
 
 ```text
-/api/payments/tokens
+POST http://127.0.0.1:3030/send_meta_tx
 ```
 
-The exact HTTP methods, schemas, and response fields should be checked in the current FastAPI router and Pydantic schema definitions.
+Stop it with:
 
-## 12. Security and Production Readiness
+```bash
+docker compose down
+```
 
-PayFlow is a testnet prototype. Before handling real funds, the project needs further review and hardening.
+**Important:** the relayer account pays gas. A relayer process without a funded testnet account can start but cannot successfully sponsor transactions.
 
-Key areas include:
+## 9. End-to-end judge smoke test
 
-1. **Identity and access:** verify authentication, session security, and ownership checks for freelancer-only operations.
-2. **Input validation:** validate amounts, asset identifiers, network identifiers, and wallet/account formats.
-3. **Provider verification:** validate signatures, quote expiry, correlation IDs, and provider status responses.
-4. **Idempotency:** prevent duplicate payment/refund submissions and repeated reconciliation side effects.
-5. **Settlement integrity:** only mark invoices paid after verified settlement.
-6. **Refund integrity:** bind refunds to original successful payments and preserve destination transaction evidence.
-7. **Secrets and transport:** use HTTPS, secure cookies, secret management, and key rotation.
-8. **Database safety:** use reviewed migrations, backups, constraints, and appropriate transaction boundaries.
-9. **Monitoring:** add structured logs, tracing, alerts, and recovery procedures.
-10. **Independent review:** complete contract, backend, and integration security reviews before production.
+Use a clean test database and testnet accounts. Do not use a high invoice amount. Use a small amount such as USD 1.00 for the demonstration.
 
-### Security roadmap
+### A. Confirm services
 
-These are release gates, not claims that every item is already production-complete:
+```bash
+curl -sS http://127.0.0.1:8000/health
+```
 
-- Identity and access hardening.
-- API/input protection and abuse controls.
-- Payment verification and idempotency.
-- Refund integrity and recovery.
-- Infrastructure, secrets, and backups.
-- Monitoring, incident response, and independent security review.
+Open `http://localhost:3000`, and confirm the Pagoda Relayer is running on port 3030.
 
-## 13. Testing and Verification
+### B. Authenticate freelancer
 
-The following flows have been exercised on NEAR testnet:
+1. Open `http://localhost:3000/login`.
+2. Connect a NEAR testnet wallet.
+3. Sign the one-time NEP-413 authentication challenge.
+4. Open `/dashboard/settings`.
 
-- Wallet authentication.
-- USD invoice creation and public payment link.
-- Direct NEAR token payment with USDC settlement.
-- Cross-chain payment through Tidepool sandbox.
-- Direct NEAR refund.
-- Cross-chain refund.
-- Sponsored NEP-366 contract interaction and contract storage verification.
+Expected: the dashboard displays the authenticated NEAR account ID. `GET /api/auth/me` returns `authenticated: true`.
 
-These are functional testnet validations, not a formal audit or production certification.
+### C. Create invoice
 
-Use small test invoices and dedicated testnet accounts. Verify the invoice, payment attempt, provider response, transaction record, refund record, and destination transaction independently.
+1. Open `/dashboard/invoices/new`.
+2. Enter client name/email, due date and at least one line item.
+3. Create the invoice.
+4. Open the created invoice management page and copy its public `/pay/<invoice-id>` link.
 
-## 14. Known Limitations
+Expected: invoice appears in the invoice list with `PENDING` status and the public link opens without freelancer login.
 
-- The application currently targets testnet.
-- Tidepool sandbox is the current payment integration.
-- Official 1Click API integration is not currently implemented.
-- Available payment assets and networks depend on provider configuration.
-- Mainnet deployment is not part of the verified implementation.
-- Production monitoring, compliance review, and independent security audits remain outstanding.
-- Do not assume Redis or other optional infrastructure is deployed unless the active environment explicitly configures it.
-- Do not assume invoice management operations beyond those exposed by the current API/UI.
+### D. Complete a direct NEAR USDC payment
 
-## 15. Future Prospects
+1. Open the public invoice link in a separate browser session/tab.
+2. Choose the direct NEAR USDC option.
+3. Connect the payer's NEAR testnet wallet and submit the USDC transfer.
+4. Wait for backend NEAR RPC reconciliation.
 
-1. **Official 1Click API integration:** integrate the official 1Click API when the project moves beyond its current sandbox/testnet setup.
-2. **Mainnet deployment:** deploy and validate the contract, relayer, backend, and payment routes after security and operational review.
-3. **Broader asset/network coverage:** expand payment choices according to provider support, liquidity, and tested routes.
-4. **Relayer hardening:** improve sponsored transaction monitoring, key management, quotas, and recovery.
-5. **Accounting improvements:** refine CSV export fields and workflows with bookkeeper feedback.
-6. **Observability:** add transaction-level tracing, alerts, and dashboards for stuck payments and refunds.
-7. **Security review:** arrange independent smart contract, backend, and integration reviews before real-fund usage.
+Expected:
+- The payment attempt moves through processing and then `SUCCESS`.
+- The invoice becomes `PAID`.
+- A NEAR transaction hash/explorer link is stored.
+- The backend records the accepted settlement on the PayFlow contract through the Pagoda Relayer when the relayer and contract settings are configured.
 
-## 16. References
+### E. Complete a cross-chain payment (optional; provider sandbox availability required)
 
-- NEAR documentation: https://docs.near.org/
-- Tidepool sandbox: https://www.usetidepool.tech
-- Next.js documentation: https://nextjs.org/docs
-- FastAPI documentation: https://fastapi.tiangolo.com/
-- SQLAlchemy documentation: https://docs.sqlalchemy.org/
+1. Use the public payment link.
+2. Choose a token/network shown by `GET /api/payments/tokens`.
+3. Enter the payer refund address required by the selected route.
+4. Create/commit the quote and follow the provider deposit instructions.
+5. Submit the origin transaction hash.
+6. Poll the payment status until final.
 
----
+Expected: the provider status and transaction data are reconciled; the invoice is settled once. A second successful attempt is retained as a duplicate settlement/review case rather than silently overwriting the first settlement.
 
-**PayFlow — make crypto payments fit the invoice, not the other way around.**
+### F. Test refund
+
+1. Open `/dashboard/payments`.
+2. Select a successful payment and request a refund.
+3. PayFlow uses the original payer network, wallet and asset metadata stored with the payment; the freelancer should not have to re-enter an arbitrary destination.
+4. Approve the quote.
+5. Submit the NEAR USDC source transfer shown by the refund flow.
+6. Reconcile until final.
+
+Expected:
+- A separate refund record is created.
+- The original payment remains unchanged.
+- Direct NEAR refund and cross-chain refund use different settlement/reconciliation paths.
+- `PROCESSING` is not displayed as `SUCCESS`; final success includes destination transaction evidence.
+
+### G. CSV export
+
+1. Open `/dashboard/invoices`.
+2. Click the CSV export action.
+
+Expected: a UTF-8 CSV download named `payflow_invoices.csv`.
+
+## 10. API and flow references
+
+- [`API_REFERENCE.md`](API_REFERENCE.md) — backend endpoints, auth requirements, payloads, frontend route map.
+- [`DEMO_GUIDE.md`](DEMO_GUIDE.md) — short demo script and the concrete NEAR value proposition.
+
+FastAPI's generated API reference is available at `/docs` when the backend is running.
+
+## 12. Known limitations and honest claims
+
+- Current implementation is a testnet prototype using Tidepool sandbox configuration. NEAR Intents has no testnet; the hackathon rules say Intents integration must use mainnet with separate development accounts, tiny amounts and dry quotes. Do not imply that the existing Tidepool testnet run is a production 1Click mainnet run.
+- Direct NEAR payments are NEP-141 USDC transfers verified through NEAR RPC.
+- Cross-chain payments depend on provider availability and provider-reported status.
+- The contract stores settlement attestations written by the backend after reconciliation. It is not a trustless verifier of the external chain swap.
+- Refunds are full refunds to the original payer's stored network/wallet route in the current implementation; partial refunds are not the documented flow.
+- Multiple payment attempts per invoice are intentional.
+- Invoice update/delete endpoints are not currently implemented.
+- A production deployment needs security review, monitoring, hardened secrets/cookies, and an independently reviewed settlement verification model.
