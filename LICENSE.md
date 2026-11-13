@@ -1,4 +1,4 @@
-# PAYFLOW — RESTRICTED HACKATHON EVALUATION LICENSE
+# RESTRICTED LICENSE
 
 **Copyright © 2026 Taufiq-ul-Islam. All rights reserved.**
 
