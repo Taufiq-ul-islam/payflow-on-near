@@ -109,7 +109,7 @@ See [Developer Documentation](docs/DEVELOPERS.md) for setup and configuration de
 PayFlow builds on the work of these projects and services:
 
 - **[NEAR Intents 1Click API](https://1click.chaindefuser.com)** — Official mainnet API used for token discovery, cross-chain quotes, deposit submission, and settlement-status reconciliation.
-- **[Tidepool](https://www.usetidepool.tech)** — Community-built NEAR Intents 1Click API sandbox used during the earlier testnet prototype for cross-chain quotes, deposits, swaps, and settlement testing. This has been extremely helpful for testing the software framework on testnet while simulating 1Click API.
+- **[Tidepool](https://www.usetidepool.tech)** — Community-built NEAR Intents 1Click API sandbox used during the earlier testnet prototype for cross-chain quotes, deposits, swaps, and settlement testing.
 - **[Pagoda Relayer](https://github.com/near/pagoda-relayer-rs)** — NEP-366 meta-transaction relayer used to sponsor gas for PayFlow's settlement-recording contract interactions.
 - **[NEAR Protocol](https://near.org)** — The blockchain infrastructure and intent-based ecosystem underlying PayFlow's settlement flow.
 
