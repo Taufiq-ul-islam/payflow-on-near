@@ -8,7 +8,7 @@ class NearRpcError(Exception):
 
 class NearRpc:
     def __init__(self):
-        self.rpc_url = settings.near_rpc_url
+        self.rpc_url = settings.near_rpc_url.rstrip("/")
         self.timeout = httpx.Timeout(30.0)
 
     async def get_transaction(
@@ -37,12 +37,20 @@ class NearRpc:
                 response.raise_for_status()
                 result = response.json()
 
+            if not isinstance(result, dict):
+                raise NearRpcError("Invalid NEAR RPC response.")
+            
             if result.get("error"):
                 raise NearRpcError(
                     f"NEAR RPC error: {result['error']}"
                 )
 
-            return result.get("result")
+            transaction_result = result.get("result")
+
+            if not isinstance(transaction_result, dict):
+                raise NearRpcError("NEAR RPC returned no transaction result.")
+
+            return transaction_result
 
         except httpx.HTTPStatusError as exc:
             raise NearRpcError(
@@ -51,9 +59,10 @@ class NearRpc:
             ) from exc
 
         except httpx.RequestError as exc:
-            raise NearRpcError(
-                f"Could not connect to NEAR RPC: {exc}"
-            ) from exc
+            raise NearRpcError(f"Could not connect to NEAR RPC: {exc}") from exc
+
+        except ValueError as exc:
+            raise NearRpcError("NEAR RPC returned invalid JSON.") from exc
 
 
     async def get_transaction_status(

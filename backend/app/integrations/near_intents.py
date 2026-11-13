@@ -13,7 +13,7 @@ class NearIntents:
         self.headers = {}
 
         if settings.near_intents_api_key:
-            self.headers["X-API-Key"] = settings.near_intents_api_key
+            self.headers["Authorization"] = (f"Bearer {settings.near_intents_api_key}")
 
     async def _request(self, method: str, path: str, **kwargs):
         try:
@@ -34,12 +34,17 @@ class NearIntents:
                 detail = exc.response.text
 
             raise NearIntentsError(
-                f"Tidepool HTTP {exc.response.status_code}: {detail}"
+                f"NEAR Intents 1Click HTTP {exc.response.status_code}: {detail}"
             ) from exc
 
         except httpx.RequestError as exc:
             raise NearIntentsError(
-                f"Tidepool connection failed: {exc}"
+                f"NEAR Intents 1Click connection failed: {exc}"
+            ) from exc
+
+        except ValueError as exc:
+            raise NearIntentsError(
+                "NEAR Intents 1Click returned an invalid JSON response."
             ) from exc
 
     async def get_tokens(self):

@@ -2,8 +2,8 @@
 
 > **Project:** PayFlow — crypto invoicing for freelancers who don't care about crypto  
 > **NEAR Hackathon track:** Real-World Money (`realworld`)  
-> **Current target:** NEAR testnet + Tidepool sandbox  
-> **Status:** Prototype. Do not use real funds.
+> **Current target:** NEAR mainnet + official NEAR Intents 1Click API  
+> **Status:** Mainnet integration configuration. This repository is not represented as a production payment service; use operational controls and small-value transactions appropriate to your deployment.
 
 This guide is written for a developer or automated judge starting from a clean clone. It gives explicit commands and observable outcomes. The detailed route contract is in [`API_REFERENCE.md`](API_REFERENCE.md); the demo script is in [`DEMO_GUIDE.md`](DEMO_GUIDE.md).
 
@@ -14,7 +14,7 @@ PayFlow is made of four separately configured pieces:
 1. **Next.js frontend** — freelancer dashboard and public invoice payment page.
 2. **FastAPI backend** — authentication, invoices, payment attempts, reconciliation, refunds and CSV export.
 3. **PostgreSQL** — persistent application and transaction records.
-4. **NEAR testnet services** — PayFlow Rust contract, NEAR RPC and Pagoda Relayer. Tidepool sandbox supplies token discovery, quotes, deposit submission and cross-chain status.
+4. **NEAR mainnet services** — PayFlow Rust contract, NEAR RPC and Pagoda Relayer. The official NEAR Intents 1Click API supplies token discovery, quotes, deposit submission and cross-chain status.
 
 The Pagoda Relayer is an external Rust service. It is not bundled as an executable in this repository. The backend calls its `POST /send_meta_tx` endpoint.
 
@@ -26,8 +26,9 @@ The Pagoda Relayer is an external Rust service. It is not bundled as an executab
 - PostgreSQL
 - Rust toolchain (`rustup`, `cargo`) for contract and relayer builds
 - Docker Compose (recommended for the Pagoda Relayer)
-- A NEAR testnet freelancer account, a separate testnet contract-admin account/key, and a funded relayer account/key
-- Tidepool sandbox access and any required API key
+- NEAR mainnet deployment details for the PayFlow contract and its restricted admin function-call key
+- A funded mainnet relayer account/key for gas-sponsored contract calls
+- Official NEAR Intents 1Click API access and the required JWT/API credential
 
 Do not commit `.env`, wallet key files, relayer `account_keys`, database passwords, or API keys.
 
@@ -112,23 +113,23 @@ Create `backend/.env` from `backend/.env.example` and set the real local values.
 ```env
 DATABASE_URL=postgresql+psycopg://postgres:<PASSWORD>@localhost:5432/payflow
 
-NEAR_NETWORK=testnet
-NEAR_RPC_URL=https://rpc.testnet.near.org
+NEAR_NETWORK=mainnet
+NEAR_RPC_URL=https://rpc.mainnet.near.org
 
-PAYFLOW_CONTRACT_ID=<deployed-payflow-contract>.testnet
-PAYFLOW_CONTRACT_ADMIN_ID=<contract-admin-account>.testnet
+PAYFLOW_CONTRACT_ID=<deployed-payflow-contract.near>
+PAYFLOW_CONTRACT_ADMIN_ID=<contract-admin-account.near>
 PAYFLOW_ADMIN_FUNCTION_CALL_PUBLIC_KEY=ed25519:<FUNCTION_CALL_PUBLIC_KEY>
 PAYFLOW_ADMIN_FUNCTION_CALL_PRIVATE_KEY=ed25519:<FUNCTION_CALL_PRIVATE_KEY>
 
 RELAYER_URL=http://127.0.0.1:3030
-RELAYER_API_KEY=
+RELAYER_API_KEY=<relayer-api-key-if-configured>
 RELAYER_MAX_GAS=100000000000000
 INTERNAL_API_KEY=<random-long-secret>
 
-NEAR_INTENTS_BASE_URL=https://www.usetidepool.tech
-NEAR_INTENTS_API_KEY=<sandbox-key-if-required>
+NEAR_INTENTS_BASE_URL=https://1click.chaindefuser.com
+NEAR_INTENTS_API_KEY=<official-1click-jwt>
 
-USDC_ASSET_ID=nep141:usdc.tidepool-sandbox.testnet
+USDC_ASSET_ID=<NEAR_MAINNET_USDC_ASSET_ID>
 USDC_DECIMALS=6
 
 FRONTEND_URL=http://localhost:3000
@@ -136,7 +137,7 @@ AUTH_COOKIE_SECURE=false
 AUTH_SESSION_DAYS=7
 ```
 
-**Provider URL check before demo:** `backend/.env.example` currently contains `https://1click.chaindefuser.com`, while the repository's Tidepool integration guide and tested sandbox configuration use `https://www.usetidepool.tech`. The integration client calls Tidepool-style `/v0/tokens`, `/v0/quote`, `/v0/deposit/submit` and `/v0/status` paths. Use the provider base URL matching the provider API you actually configured; do not mix a production 1Click host with Tidepool sandbox credentials or assumptions.
+The backend's NEAR Intents client uses the official 1Click API base URL and its `/v0/tokens`, `/v0/quote`, `/v0/deposit/submit` and `/v0/status` endpoints. Keep the provider URL, credentials, network setting and asset identifiers aligned: do not combine mainnet 1Click with Tidepool sandbox credentials or testnet asset IDs. The 1Click API is used for cross-chain routing; direct NEAR USDC transfers are verified through the configured NEAR RPC.
 
 Start the backend:
 
@@ -198,7 +199,7 @@ npm run build
 npm run start
 ```
 
-The frontend uses cookie-based sessions (`credentials: "include"`). Keep `FRONTEND_URL` in the backend aligned with the browser origin. Local development uses `AUTH_COOKIE_SECURE=false`; production must use HTTPS and secure cookies.
+The frontend uses cookie-based sessions (`credentials: "include"`). Keep `FRONTEND_URL` in the backend aligned with the browser origin. For local HTTP development, use `AUTH_COOKIE_SECURE=false`; for an HTTPS deployment, set `AUTH_COOKIE_SECURE=true`. This cookie setting is independent of the NEAR network selected by `NEAR_NETWORK=mainnet`.
 
 ## 7. Build and deploy the PayFlow contract
 
@@ -222,11 +223,11 @@ The resulting wasm is normally:
 target/wasm32-unknown-unknown/release/payflow.wasm
 ```
 
-Deploy and initialize using the NEAR CLI version available to the operator. Example shape (replace account IDs and use a testnet key you control):
+Deploy and initialize using the NEAR CLI version available to the operator. Example shape (replace the placeholders with your deployed mainnet contract details and use the intended deployment key):
 
 ```bash
 near contract deploy <PAYFLOW_CONTRACT_ID> use-file target/wasm32-unknown-unknown/release/payflow.wasm
-near contract call-function as-transaction <PAYFLOW_CONTRACT_ID> new json-args '{"admin":"<PAYFLOW_CONTRACT_ADMIN_ID>"}' prepaid-gas '100 Tgas' attached-deposit '0 NEAR' sign-as <DEPLOYER_ACCOUNT>.testnet network-config testnet sign-with-plaintext-private-key send
+near contract call-function as-transaction <PAYFLOW_CONTRACT_ID> new json-args '{"admin":"<PAYFLOW_CONTRACT_ADMIN_ID>"}' prepaid-gas '100 Tgas' attached-deposit '0 NEAR' sign-as <DEPLOYER_ACCOUNT> network-config mainnet sign-with-plaintext-private-key send
 ```
 
 CLI syntax varies by installed `near` version; if this command shape is not supported, use the equivalent `near deploy` and `near call` commands for that CLI release. Do not deploy or reinitialize a contract that already contains project data.
@@ -263,14 +264,14 @@ git checkout <THE_SAME_UPSTREAM_COMMIT_SHA>
 
 ### Configure relayer account
 
-Create a dedicated NEAR testnet account to pay relayed gas. Fund it with testnet NEAR. The upstream relayer expects a key JSON file under `account_keys/` with `account_id`, `public_key`, and `secret_key`. The upstream README notes that a copied NEAR credentials file may use `private_key`; rename that property to `secret_key` if required by the checked-out upstream version.
+Configure a dedicated NEAR mainnet relayer account to pay relayed gas. It must hold sufficient mainnet NEAR for the sponsored contract calls. The upstream relayer expects a key JSON file under `account_keys/` with `account_id`, `public_key`, and `secret_key`. The upstream README notes that a copied NEAR credentials file may use `private_key`; rename that property to `secret_key` if required by the checked-out upstream version.
 
 Example shape only — never commit actual credentials:
 
 ```json
 [
   {
-    "account_id": "<RELAYER_ACCOUNT>.testnet",
+    "account_id": "<RELAYER_ACCOUNT_ID>",
     "public_key": "ed25519:<PUBLIC_KEY>",
     "secret_key": "ed25519:<PRIVATE_KEY>"
   }
@@ -284,10 +285,10 @@ Put this file in `vendor/pagoda-relayer-rs/account_keys/` and ensure it is ignor
 Start from the upstream `config.toml` and the upstream examples for the checked-out commit. Set:
 
 - `port = 3030`
-- `relayer_account_id` to the dedicated funded testnet relayer account
+- `relayer_account_id` to the dedicated funded mainnet relayer account
 - `keys_filename` to the key JSON file
-- `network = "testnet"`
-- `rpc_url = "https://rpc.testnet.near.org"`
+- `network = "mainnet"`
+- `rpc_url = "https://rpc.mainnet.near.org"`
 - `use_whitelisted_contracts = true` and configure the PayFlow contract allowlist using the exact syntax in the pinned upstream examples
 - Keep the relayer receiver allowlist restrictive where supported
 - Disable optional Redis/allowance/FastAuth features unless the selected upstream config requires them
@@ -329,11 +330,11 @@ Stop it with:
 docker compose down
 ```
 
-**Important:** the relayer account pays gas. A relayer process without a funded testnet account can start but cannot successfully sponsor transactions.
+**Important:** the relayer account pays gas. A relayer process without a funded mainnet account can start but cannot successfully sponsor transactions.
 
 ## 9. End-to-end judge smoke test
 
-Use a clean test database and testnet accounts. Do not use a high invoice amount. Use a small amount such as USD 1.00 for the demonstration.
+Use a dedicated application database and the intended mainnet deployment configuration. For any live-value demonstration, use a deliberately small invoice amount and follow the provider and network operational guidance.
 
 ### A. Confirm services
 
@@ -346,7 +347,7 @@ Open `http://localhost:3000`, and confirm the Pagoda Relayer is running on port 
 ### B. Authenticate freelancer
 
 1. Open `http://localhost:3000/login`.
-2. Connect a NEAR testnet wallet.
+2. Connect a NEAR mainnet wallet.
 3. Sign the one-time NEP-413 authentication challenge.
 4. Open `/dashboard/settings`.
 
@@ -365,7 +366,7 @@ Expected: invoice appears in the invoice list with `PENDING` status and the publ
 
 1. Open the public invoice link in a separate browser session/tab.
 2. Choose the direct NEAR USDC option.
-3. Connect the payer's NEAR testnet wallet and submit the USDC transfer.
+3. Connect the payer's NEAR mainnet wallet and submit the USDC transfer.
 4. Wait for backend NEAR RPC reconciliation.
 
 Expected:
@@ -374,7 +375,7 @@ Expected:
 - A NEAR transaction hash/explorer link is stored.
 - The backend records the accepted settlement on the PayFlow contract through the Pagoda Relayer when the relayer and contract settings are configured.
 
-### E. Complete a cross-chain payment (optional; provider sandbox availability required)
+### E. Complete a cross-chain payment (optional; official 1Click API availability required)
 
 1. Use the public payment link.
 2. Choose a token/network shown by `GET /api/payments/tokens`.
@@ -414,13 +415,13 @@ Expected: a UTF-8 CSV download named `payflow_invoices.csv`.
 
 FastAPI's generated API reference is available at `/docs` when the backend is running.
 
-## 12. Known limitations and honest claims
+## 11. Known limitations and deployment considerations
 
-- Current implementation is a testnet prototype using Tidepool sandbox configuration. NEAR Intents has no testnet; the hackathon rules say Intents integration must use mainnet with separate development accounts, tiny amounts and dry quotes. Do not imply that the existing Tidepool testnet run is a production 1Click mainnet run.
+- The current mainnet integration targets the official NEAR Intents 1Click API at `https://1click.chaindefuser.com`, with NEAR mainnet RPC and mainnet contract/relayer configuration. Tidepool was used for the earlier testnet prototype and is retained in the acknowledgements for that work; it is not the active mainnet provider.
 - Direct NEAR payments are NEP-141 USDC transfers verified through NEAR RPC.
 - Cross-chain payments depend on provider availability and provider-reported status.
 - The contract stores settlement attestations written by the backend after reconciliation. It is not a trustless verifier of the external chain swap.
 - Refunds are full refunds to the original payer's stored network/wallet route in the current implementation; partial refunds are not the documented flow.
 - Multiple payment attempts per invoice are intentional.
 - Invoice update/delete endpoints are not currently implemented.
-- A production deployment needs security review, monitoring, hardened secrets/cookies, and an independently reviewed settlement verification model.
+- A production deployment still requires independent security review, monitoring, hardened secrets/cookies, operational alerting, and an independently reviewed settlement verification model.

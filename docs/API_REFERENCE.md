@@ -11,7 +11,7 @@
 - Public invoice/payment endpoints intentionally do not require a freelancer session so a payer can pay from a shared link.
 - IDs are UUID strings unless noted.
 - Monetary values should be treated as decimal strings or integer base units, not JavaScript floating-point values.
-- USDC has 6 decimals in the configured test environment: `1 USDC = 1000000` base units.
+- The configured NEAR USDC asset uses 6 decimals: `1 USDC = 1000000` base units. The backend reads the configured asset ID and decimal precision from environment settings.
 - Rate-limited routes return the framework's rate-limit response when the configured limit is exceeded.
 
 ## 2. Endpoint index
@@ -56,7 +56,7 @@
 Request:
 
 ```json
-{ "account_id": "freelancer.testnet" }
+{ "account_id": "<FREELANCER_NEAR_ACCOUNT_ID>" }
 ```
 
 Returns a challenge object containing `challenge_id`, `account_id`, `message`, `nonce`, `recipient`, `callback_url` and `expires_at`.
@@ -70,7 +70,7 @@ Request:
 ```json
 {
   "challenge_id": "<uuid>",
-  "account_id": "freelancer.testnet",
+  "account_id": "<FREELANCER_NEAR_ACCOUNT_ID>",
   "public_key": "ed25519:<public-key>",
   "signature": "<wallet-signature>"
 }
@@ -81,7 +81,7 @@ On success returns:
 ```json
 {
   "authenticated": true,
-  "account_id": "freelancer.testnet",
+  "account_id": "<FREELANCER_NEAR_ACCOUNT_ID>",
   "expires_at": "<ISO-8601 timestamp>"
 }
 ```
@@ -93,7 +93,7 @@ Also sets `payflow_session` as an HttpOnly cookie. The cookie is `SameSite=Lax`;
 Requires the session cookie.
 
 ```json
-{ "authenticated": true, "account_id": "freelancer.testnet" }
+{ "authenticated": true, "account_id": "<FREELANCER_NEAR_ACCOUNT_ID>" }
 ```
 
 ### `POST /auth/logout`
@@ -250,10 +250,10 @@ Public endpoint called after the payer has made the source-chain transfer. Reque
 ```json
 {
   "tx_hash": "<origin-transaction-hash>",
-  "near_sender_account": "payer.testnet",
+  "near_sender_account": "<PAYER_NEAR_ACCOUNT_ID>",
   "payer_address": "payer-wallet-address",
   "payer_network": "near",
-  "payer_asset": "nep141:usdc.tidepool-sandbox.testnet",
+  "payer_asset": "<NEAR_MAINNET_USDC_ASSET_ID>",
   "payer_asset_decimals": 6
 }
 ```
@@ -299,7 +299,7 @@ Request:
 ```json
 {
   "tx_hash": "<NEAR-USDC-transfer-hash>",
-  "near_sender_account": "freelancer.testnet"
+  "near_sender_account": "<FREELANCER_NEAR_ACCOUNT_ID>"
 }
 ```
 
@@ -403,7 +403,7 @@ sequenceDiagram
     W-->>UI: public_key + signature
     UI->>API: POST /auth/verify
     API->>API: Verify challenge/signature and account key
-    API->>DB: Consume challenge; create session
+    API->>DB: Consume challenge, create session
     API-->>UI: Set HttpOnly payflow_session cookie
     UI->>API: GET /auth/me
     API-->>UI: authenticated + account_id
@@ -460,7 +460,7 @@ sequenceDiagram
     participant P as Payer
     participant UI as Pay page
     participant API as FastAPI
-    participant T as Tidepool
+    participant T as NEAR Intents 1Click
     participant DB as PostgreSQL
 
     UI->>API: GET /payments/tokens
@@ -495,7 +495,7 @@ sequenceDiagram
     participant F as Freelancer dashboard
     participant API as FastAPI
     participant DB as PostgreSQL
-    participant T as Tidepool
+    participant T as NEAR Intents 1Click
     participant N as NEAR RPC
 
     F->>API: POST /refunds/quote/{payment_attempt_id}
@@ -511,7 +511,7 @@ sequenceDiagram
     F->>N: Send source NEAR USDC transfer
     F->>API: POST /refunds/{id}/deposit-submit
     API->>N: Verify actual NEP-141 transfer
-    API->>DB: Save refund transaction; set PROCESSING
+    API->>DB: Save refund transaction, set PROCESSING
     alt Destination network is NEAR
         F->>API: POST /refunds/{id}/reconcile
         API->>N: Verify destination refund transaction

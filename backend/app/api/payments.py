@@ -1,12 +1,13 @@
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session, joinedload, selectinload
 from redis_fastapi import rate_limit
 
 from app.core.database import get_db
 from app.integrations.near_intents import near_intents, NearIntentsError
+from app.integrations.quote_signature import verify_quote_signature
 from app.models.invoice import Invoice
 from app.models.payment import PaymentAttempt, Transaction
 from app.schemas.payment import DepositSubmitRequest
@@ -18,6 +19,7 @@ from app.api.auth import current_user
 
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
+
 
 ACTIVE_STATUSES = {
     "PENDING_DEPOSIT",
@@ -39,6 +41,20 @@ def serialize_attempt(attempt):
             (attempt.quote_response or {}).get("payment_mode", "INTENTS")
         ),
     }
+
+
+def verify_provider_quote(quote_response):
+    """Verify the signature on a NEAR Intents 1Click quote."""
+
+    if not isinstance(quote_response, dict):
+        return False
+
+    return verify_quote_signature(
+        quote_response.get("quoteRequest"),
+        quote_response.get("quote"),
+        quote_response.get("timestamp"),
+        quote_response.get("signature"),
+    )
 
 
 @router.get("/")
@@ -94,7 +110,10 @@ def list_payment_attempts(
     ]
 
 
-@router.get("/tokens", dependencies=[Depends(rate_limit("30/minute"))])
+@router.get(
+    "/tokens",
+    dependencies=[Depends(rate_limit("30/minute"))],
+)
 async def supported_tokens():
     try:
         return await near_intents.get_tokens()
@@ -102,32 +121,52 @@ async def supported_tokens():
         raise HTTPException(502, str(exc))
 
 
-@router.post("/quote/{invoice_id}", dependencies=[Depends(rate_limit("10/minute"))])
+@router.post(
+    "/quote/{invoice_id}",
+    dependencies=[Depends(rate_limit("10/minute"))],
+)
 async def request_quote(
     invoice_id: UUID,
     source_asset: str,
     refund_address: str,
     db: Session = Depends(get_db),
 ):
-    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    invoice = (
+        db.query(Invoice)
+        .filter(Invoice.id == invoice_id)
+        .first()
+    )
 
     if not invoice:
         raise HTTPException(404, "Invoice not found")
 
     try:
-        return await create_payment_quote(
+        quote_response = await create_payment_quote(
             invoice,
             source_asset,
             refund_address,
             dry=True,
         )
+
+        if not verify_provider_quote(quote_response):
+            raise HTTPException(
+                502,
+                "NEAR Intents quote signature verification failed",
+            )
+
+        return quote_response
+
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
     except NearIntentsError as exc:
         raise HTTPException(502, str(exc))
 
 
-@router.post("/direct/{invoice_id}", dependencies=[Depends(rate_limit("5/minute"))])
+@router.post(
+    "/direct/{invoice_id}",
+    dependencies=[Depends(rate_limit("5/minute"))],
+)
 def create_direct_payment(
     invoice_id: UUID,
     idempotency_key: str = Header(
@@ -138,7 +177,6 @@ def create_direct_payment(
     ),
     db: Session = Depends(get_db),
 ):
-    # Idempotent retry.
     existing = (
         db.query(PaymentAttempt)
         .filter(PaymentAttempt.idempotency_key == idempotency_key)
@@ -148,12 +186,17 @@ def create_direct_payment(
     if existing:
         if existing.invoice_id != invoice_id:
             raise HTTPException(
-                409, "Idempotency key was already used for another invoice",
+                409,
+                "Idempotency key was already used for another invoice",
             )
 
-        if ((existing.quote_response or {}).get("payment_mode") != "DIRECT_NEAR"):
+        if (
+            (existing.quote_response or {}).get("payment_mode")
+            != "DIRECT_NEAR"
+        ):
             raise HTTPException(
-                409, "Idempotency key belongs to a different payment method",
+                409,
+                "Idempotency key belongs to a different payment method",
             )
 
         return {
@@ -183,7 +226,8 @@ def create_direct_payment(
     if not settings.usdc_asset_id.startswith("nep141:"):
         db.rollback()
         raise HTTPException(
-            400, "Direct payment requires a NEAR NEP-141 USDC asset",
+            400,
+            "Direct payment requires a NEAR NEP-141 USDC asset",
         )
 
     if invoice.due_date:
@@ -198,12 +242,8 @@ def create_direct_payment(
 
     try:
         amount_units = convert_usdc_to_units(invoice.total)
-
         attempt_id = uuid4()
 
-        # Synthetic unique internal address because the existing
-        # database column is non-nullable and unique.
-        # The actual recipient is stored in quoteRequest.recipient.
         quote_response = {
             "payment_mode": "DIRECT_NEAR",
             "quoteRequest": {
@@ -222,18 +262,13 @@ def create_direct_payment(
             id=attempt_id,
             invoice_id=invoice.id,
             idempotency_key=idempotency_key,
-
             quote_response=quote_response,
-
             deposit_address=f"direct-near:{attempt_id}",
             deposit_memo=None,
-
             source_asset=settings.usdc_asset_id,
             destination_asset=settings.usdc_asset_id,
-
             expected_input_amount=amount_units,
             expected_amount=amount_units,
-
             refund_address=None,
             status="PENDING_DEPOSIT",
         )
@@ -252,7 +287,10 @@ def create_direct_payment(
         raise HTTPException(400, str(exc))
 
 
-@router.post("/commit/{invoice_id}", dependencies=[Depends(rate_limit("5/minute"))])
+@router.post(
+    "/commit/{invoice_id}",
+    dependencies=[Depends(rate_limit("5/minute"))],
+)
 async def commit_payment(
     invoice_id: UUID,
     source_asset: str,
@@ -265,7 +303,6 @@ async def commit_payment(
     ),
     db: Session = Depends(get_db),
 ):
-    # A retry with the same key returns the original attempt.
     existing = (
         db.query(PaymentAttempt)
         .filter(PaymentAttempt.idempotency_key == idempotency_key)
@@ -275,15 +312,17 @@ async def commit_payment(
     if existing:
         if existing.invoice_id != invoice_id:
             raise HTTPException(
-                409, "Idempotency key was already used for another invoice",
+                409,
+                "Idempotency key was already used for another invoice",
             )
-        
+
         if (
             existing.source_asset != source_asset
             or existing.refund_address != refund_address
         ):
             raise HTTPException(
-                409, "Idempotency key was reused with different payment details",
+                409,
+                "Idempotency key was reused with different payment details",
             )
 
         return {
@@ -291,7 +330,6 @@ async def commit_payment(
             "quote": existing.quote_response,
         }
 
-    # Lock the invoice row to serialize concurrent commit requests.
     invoice = (
         db.query(Invoice)
         .filter(Invoice.id == invoice_id)
@@ -308,51 +346,100 @@ async def commit_payment(
         raise HTTPException(409, "Invoice is not payable")
 
     try:
-        # Keep the row lock until the quote is persisted.
         quote_response = await create_payment_quote(
-            invoice, source_asset, refund_address, dry=False,
+            invoice,
+            source_asset,
+            refund_address,
+            dry=False,
         )
 
-        quote = quote_response.get("quote") or {}
-        quote_request = quote_response.get("quoteRequest") or {}
+        if not isinstance(quote_response, dict):
+            raise ValueError("Invalid NEAR Intents quote response")
+
+        quote = quote_response.get("quote")
+        quote_request = quote_response.get("quoteRequest")
+
+        if not isinstance(quote, dict) or not isinstance(
+            quote_request, dict
+        ):
+            raise ValueError(
+                "NEAR Intents returned an incomplete quote"
+            )
+
+        if not verify_provider_quote(quote_response):
+            raise ValueError(
+                "NEAR Intents 1Click quote signature verification failed"
+            )
+
+        correlation_id = quote_response.get("correlationId")
+
+        if not isinstance(correlation_id, str) or not correlation_id:
+            raise ValueError(
+                "NEAR Intents quote has no correlation ID"
+            )
+
+        expected_quote_fields = {
+            "originAsset": source_asset,
+            "destinationAsset": settings.usdc_asset_id,
+            "amount": convert_usdc_to_units(invoice.total),
+            "refundTo": refund_address,
+            "recipient": invoice.freelancer_id,
+            "swapType": "EXACT_OUTPUT",
+            "depositMode": "SIMPLE",
+            "depositType": "ORIGIN_CHAIN",
+            "refundType": "ORIGIN_CHAIN",
+            "recipientType": "DESTINATION_CHAIN",
+        }
+
+        for field, expected in expected_quote_fields.items():
+            if quote_request.get(field) != expected:
+                raise ValueError(
+                    f"NEAR Intents quote has an unexpected {field}"
+                )
 
         deposit_address = quote.get("depositAddress")
         expected_amount = quote.get("amountOut")
+        expected_input_amount = quote.get("amountIn")
 
-        if not deposit_address or not expected_amount:
-            raise ValueError("Tidepool returned an incomplete live quote")
+        if (
+            not isinstance(deposit_address, str)
+            or not deposit_address
+            or expected_amount is None
+            or expected_input_amount is None
+        ):
+            raise ValueError(
+                "NEAR Intents 1Click returned an incomplete live quote"
+            )
+
+        if str(expected_amount) != convert_usdc_to_units(invoice.total):
+            raise ValueError(
+                "NEAR Intents quote output does not match the invoice amount"
+            )
+
+        try:
+            if int(str(expected_input_amount)) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise ValueError(
+                "NEAR Intents returned an invalid input amount"
+            )
 
         attempt = PaymentAttempt(
             invoice_id=invoice.id,
             idempotency_key=idempotency_key,
-
-            quote_id=quote_response.get("correlationId"),
+            quote_id=correlation_id,
             quote_signature=quote_response.get("signature"),
             quote_response=quote_response,
-
             deposit_address=deposit_address,
             deposit_memo=quote.get("depositMemo"),
-
             source_asset=source_asset,
-            destination_asset=quote_request.get("destinationAsset"),
-
-            expected_input_amount=quote.get("amountIn"),
+            destination_asset=settings.usdc_asset_id,
+            expected_input_amount=expected_input_amount,
             expected_amount=expected_amount,
-
             refund_address=refund_address,
-            provider_correlation_id=quote_response.get("correlationId"),
-
+            provider_correlation_id=correlation_id,
             status="PENDING_DEPOSIT",
         )
-
-        if not quote_request.get("destinationAsset"):
-            raise ValueError("Quote has no destination asset")
-
-        if quote_request.get("recipient") != invoice.freelancer_id:
-            raise ValueError("Quote recipient does not match invoice")
-
-        if not attempt.destination_asset:
-            raise ValueError("Quote has no destination asset")
 
         db.add(attempt)
         db.commit()
@@ -372,8 +459,10 @@ async def commit_payment(
         raise HTTPException(400, str(exc))
 
 
-
-@router.post("/{attempt_id}/deposit-submit", dependencies=[Depends(rate_limit("10/minute"))])
+@router.post(
+    "/{attempt_id}/deposit-submit",
+    dependencies=[Depends(rate_limit("10/minute"))],
+)
 async def submit_deposit(
     attempt_id: UUID,
     data: DepositSubmitRequest,
@@ -391,16 +480,20 @@ async def submit_deposit(
 
     if attempt.status not in ACTIVE_STATUSES:
         raise HTTPException(
-            409, f"Cannot submit a deposit for status {attempt.status}"
+            409,
+            f"Cannot submit a deposit for status {attempt.status}",
         )
+
+    quote_response = attempt.quote_response or {}
+
+    is_direct_near = (
+        quote_response.get("payment_mode") == "DIRECT_NEAR"
+    )
 
     tx_hash = data.tx_hash.strip()
     payer_address = (data.payer_address or "").strip()
     payer_network = (data.payer_network or "").strip().lower()
     payer_asset = (data.payer_asset or "").strip()
-    is_direct_near = (
-        (attempt.quote_response or {}).get("payment_mode") == "DIRECT_NEAR"
-    )
 
     duplicate = (
         db.query(Transaction)
@@ -417,22 +510,29 @@ async def submit_deposit(
             "Transaction hash is already associated with another payment",
         )
 
-    # Validate direct NEAR payment identity and asset.
+    # Direct NEAR payment: no 1Click correlation ID is required.
     if is_direct_near:
-        sender_account = (data.near_sender_account or "").strip()
+        sender_account = (
+            data.near_sender_account or ""
+        ).strip()
 
         if not sender_account:
             raise HTTPException(
-                400, "Payer NEAR account ID is required for direct payment"
+                400,
+                "Payer NEAR account ID is required for direct payment",
             )
 
         if not payer_address or payer_address != sender_account:
             raise HTTPException(
-                400, "Payer address must match the NEAR sender account"
+                400,
+                "Payer address must match the NEAR sender account",
             )
 
         if payer_network != "near":
-            raise HTTPException(400, "Direct payment network must be NEAR")
+            raise HTTPException(
+                400,
+                "Direct payment network must be NEAR",
+            )
 
         if (
             attempt.source_asset != settings.usdc_asset_id
@@ -440,7 +540,8 @@ async def submit_deposit(
             or data.payer_asset_decimals != settings.usdc_decimals
         ):
             raise HTTPException(
-                400, "Direct payment must use the configured NEAR USDC asset"
+                400,
+                "Direct payment must use the configured NEAR USDC asset",
             )
 
         attempt.payer_address = sender_account
@@ -455,7 +556,7 @@ async def submit_deposit(
             transaction_type="DIRECT_PAYMENT",
             amount=attempt.expected_amount,
             explorer_url=(
-                f"https://testnet.nearblocks.io/txns/{tx_hash}"
+                f"https://{'nearblocks.io' if settings.near_network == 'mainnet' else 'testnet.nearblocks.io'}/txns/{tx_hash}"
             ),
         )
 
@@ -473,20 +574,41 @@ async def submit_deposit(
             "message": "Transaction submitted for NEAR verification",
         }
 
-    # Validate cross-chain payer details against the original quote.
-    if not payer_address or not payer_network or not payer_asset:
+    # Cross-chain payment: require the original 1Click correlation ID.
+    if not attempt.provider_correlation_id:
         raise HTTPException(
-            400, "Payer address, network, and asset are required"
+            409,
+            "Payment attempt has no provider correlation ID",
         )
 
-    if not attempt.refund_address or payer_address != attempt.refund_address:
+    if (
+        quote_response.get("correlationId")
+        != attempt.provider_correlation_id
+    ):
         raise HTTPException(
-            400, "Payer address does not match the original payment quote"
+            409,
+            "Payment quote correlation ID mismatch",
+        )
+
+    if not payer_address or not payer_network or not payer_asset:
+        raise HTTPException(
+            400,
+            "Payer address, network, and asset are required",
+        )
+
+    if (
+        not attempt.refund_address
+        or payer_address != attempt.refund_address
+    ):
+        raise HTTPException(
+            400,
+            "Payer address does not match the original payment quote",
         )
 
     if payer_asset != attempt.source_asset:
         raise HTTPException(
-            400, "Payer asset does not match the original payment quote"
+            400,
+            "Payer asset does not match the original payment quote",
         )
 
     try:
@@ -494,21 +616,29 @@ async def submit_deposit(
 
         if isinstance(token_response, list):
             tokens = token_response
+
         elif isinstance(token_response, dict):
-            tokens = token_response.get("tokens") or token_response.get("data")
+            tokens = (
+                token_response.get("tokens")
+                or token_response.get("data")
+            )
+
             if isinstance(tokens, dict):
                 tokens = tokens.get("tokens")
+
         else:
             tokens = None
 
         if not isinstance(tokens, list):
             raise HTTPException(
-                502, "Unexpected Tidepool token registry response"
+                502,
+                "Unexpected NEAR Intents 1Click token registry response",
             )
 
         source_token = next(
             (
-                token for token in tokens
+                token
+                for token in tokens
                 if isinstance(token, dict)
                 and token.get("assetId") == attempt.source_asset
             ),
@@ -517,7 +647,8 @@ async def submit_deposit(
 
         if not source_token:
             raise HTTPException(
-                400, "Original payment asset is not in Tidepool's token registry"
+                400,
+                "Original payment asset is not in NEAR Intents 1Click's token registry",
             )
 
         registry_network = str(
@@ -528,34 +659,38 @@ async def submit_deposit(
             registry_decimals = int(source_token["decimals"])
         except (KeyError, TypeError, ValueError):
             raise HTTPException(
-                502, "Tidepool token registry has invalid asset decimals"
+                502,
+                "NEAR Intents 1Click token registry has invalid asset decimals",
             )
 
         if payer_network != registry_network:
             raise HTTPException(
-                400, "Payer network does not match the original payment asset"
+                400,
+                "Payer network does not match the original payment asset",
             )
 
         if data.payer_asset_decimals != registry_decimals:
             raise HTTPException(
-                400, "Payer asset decimals do not match Tidepool's token registry"
+                400,
+                "Payer asset decimals do not match NEAR Intents 1Click's token registry",
             )
 
-    except NearIntentsError as exc:
-        raise HTTPException(502, str(exc))
+        attempt.payer_address = payer_address
+        attempt.payer_network = payer_network
+        attempt.payer_asset = payer_asset
+        attempt.payer_asset_decimals = registry_decimals
 
-    attempt.payer_address = payer_address
-    attempt.payer_network = payer_network
-    attempt.payer_asset = payer_asset
-    attempt.payer_asset_decimals = registry_decimals
-
-    try:
         result = await near_intents.submit_deposit(
             deposit_address=attempt.deposit_address,
             tx_hash=tx_hash,
             memo=attempt.deposit_memo,
             near_sender_account=data.near_sender_account,
         )
+
+        if not isinstance(result, dict):
+            raise NearIntentsError(
+                "NEAR Intents returned an invalid deposit submission response"
+            )
 
         transaction = Transaction(
             payment_attempt_id=attempt.id,
@@ -582,7 +717,10 @@ async def submit_deposit(
         raise HTTPException(502, str(exc))
 
 
-@router.get("/{attempt_id}/status", dependencies=[Depends(rate_limit("30/minute"))])
+@router.get(
+    "/{attempt_id}/status",
+    dependencies=[Depends(rate_limit("30/minute"))],
+)
 async def payment_status(
     attempt_id: UUID,
     db: Session = Depends(get_db),
@@ -597,14 +735,19 @@ async def payment_status(
         raise HTTPException(404, "Payment attempt not found")
 
     try:
-        if ((attempt.quote_response or {}).get("payment_mode") == "DIRECT_NEAR"):
+        if (
+            (attempt.quote_response or {}).get("payment_mode")
+            == "DIRECT_NEAR"
+        ):
             return await reconcile_direct_near_payment(db, attempt)
-        
+
         return await reconcile_payment(db, attempt)
 
     except NearIntentsError as exc:
         raise HTTPException(502, str(exc))
+
     except NearRPCError as exc:
         raise HTTPException(502, str(exc))
+
     except ValueError as exc:
         raise HTTPException(409, str(exc))
