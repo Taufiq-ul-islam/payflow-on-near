@@ -1,19 +1,24 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
+
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.integrations.near_intents import near_intents
-from app.integrations.near_rpc import NearRpcError
 from app.models.refund import Refund, RefundTransaction
-from app.services.refund_service import verify_refund_transfer, get_usdc_token, amount_to_units
+from app.services.refund_service import (
+    verify_refund_transfer,
+    get_usdc_token,
+    amount_to_units,
+)
+from app.integrations.quote_signature import verify_quote_signature
 
 
 PENDING_PROVIDER_STATUSES = {
     "PENDING_DEPOSIT",
     "KNOWN_DEPOSIT_TX",
-    "INCOMPLETE_DEPOSIT",
+    # "INCOMPLETE_DEPOSIT",
     "PROCESSING",
 }
 
@@ -34,7 +39,7 @@ def _refund_response(refund):
 
 def _get_quote_details(refund):
     response = refund.quote_response or {}
-    quote = response.get("quote", response)
+    quote = response.get("quote", {})
 
     return response, quote
 
@@ -48,6 +53,83 @@ def _mark_review(refund, db, status_data, reason):
     }
     db.commit()
     return _refund_response(refund)
+
+
+def _verify_refund_quote(refund, response):
+    if not isinstance(response, dict):
+        return None, None, "Quote response is invalid."
+
+    quote = response.get("quote")
+    quote_request = response.get("quoteRequest")
+
+    if not isinstance(quote, dict) or not isinstance(quote_request, dict):
+        return None, None, "Quote or quote request is missing."
+
+    signature = response.get("signature")
+
+    if not signature:
+        return None, None, "Quote signature is missing."
+
+    if not verify_quote_signature(
+        quote_request,
+        quote,
+        response.get("timestamp"),
+        signature,
+    ):
+        return None, None, "Quote signature verification failed."
+
+    if signature != refund.quote_signature:
+        return None, None, "Quote signature does not match the stored refund."
+
+    correlation_id = response.get("correlationId")
+
+    if (
+        not correlation_id
+        or correlation_id != refund.provider_correlation_id
+    ):
+        return None, None, "Quote correlation ID mismatch."
+
+    expected_fields = {
+        "originAsset": refund.source_asset,
+        "destinationAsset": refund.destination_asset,
+        "amount": amount_to_units(
+            Decimal(str(refund.source_amount)),
+            settings.usdc_decimals,
+        ),
+        "refundTo": None,
+        "recipient": refund.destination_address,
+        "swapType": "EXACT_INPUT",
+        "depositMode": "SIMPLE",
+        "depositType": "ORIGIN_CHAIN",
+        "refundType": "ORIGIN_CHAIN",
+        "recipientType": "DESTINATION_CHAIN",
+    }
+
+    # The refund recipient on the origin chain is the freelancer.
+    # The stored signed request is also checked against the original quote
+    # when reconciling the provider status below.
+    original_response = refund.quote_response or {}
+    original_request = original_response.get("quoteRequest") or {}
+
+    expected_fields["refundTo"] = original_request.get("refundTo")
+
+    for field, expected in expected_fields.items():
+        if not expected or quote_request.get(field) != expected:
+            return None, None, f"Quote {field} does not match the refund."
+
+    if quote.get("depositAddress") != refund.deposit_address:
+        return None, None, "Quote deposit address mismatch."
+
+    if quote.get("depositMemo") != refund.deposit_memo:
+        return None, None, "Quote deposit memo mismatch."
+
+    if not quote.get("amountIn") or not quote.get("amountOut"):
+        return None, None, "Quote is missing input or output amount."
+
+    if str(quote["amountIn"]) != expected_fields["amount"]:
+        return None, None, "Quote input amount mismatch."
+
+    return quote, quote_request, None
 
 
 async def reconcile_direct_near_refund(
@@ -71,7 +153,7 @@ async def reconcile_direct_near_refund(
     if refund.status == "SUCCESS":
         return _refund_response(refund)
 
-    if refund.status not in ["PENDING", "PROCESSING"]:
+    if refund.status not in {"PENDING", "PROCESSING"}:
         raise ValueError(
             f"Cannot reconcile refund in status {refund.status}."
         )
@@ -100,7 +182,9 @@ async def reconcile_direct_near_refund(
     )
 
     if verification["amount"] != expected_units:
-        raise ValueError("Verified refund amount does not match expected amount.")
+        raise ValueError(
+            "Verified refund amount does not match expected amount."
+        )
 
     expected_amount = Decimal(str(refund.expected_amount))
 
@@ -115,8 +199,15 @@ async def reconcile_direct_near_refund(
     }
 
     transaction.amount = expected_amount
+
+    explorer_base = (
+        "https://nearblocks.io"
+        if settings.near_network == "mainnet"
+        else "https://testnet.nearblocks.io"
+    )
+
     transaction.explorer_url = (
-        f"https://testnet.nearblocks.io/txns/{transaction.tx_hash}"
+        f"{explorer_base}/txns/{transaction.tx_hash}"
     )
 
     db.commit()
@@ -148,21 +239,86 @@ async def reconcile_cross_chain_refund(
     if refund.status in FINAL_REFUND_STATUSES:
         return _refund_response(refund)
 
-    if refund.status not in ["PENDING", "PROCESSING"]:
-        raise ValueError(f"Cannot reconcile refund in status {refund.status}.")
+    if refund.status not in {"PENDING", "PROCESSING"}:
+        raise ValueError(
+            f"Cannot reconcile refund in status {refund.status}."
+        )
 
     if not refund.deposit_address:
-        raise ValueError("Refund has no Tidepool deposit address.")
+        raise ValueError("Refund has no 1Click deposit address.")
+
+    original_response, original_quote = _get_quote_details(refund)
+
+    # Verify the original stored quote first.
+    original_quote_details, original_request, original_error = (
+        _verify_refund_quote(refund, original_response)
+    )
+
+    if original_error:
+        return _mark_review(
+            refund,
+            db,
+            None,
+            f"Original refund quote: {original_error}",
+        )
 
     status_data = await near_intents.get_status(
         deposit_address=refund.deposit_address,
         deposit_memo=refund.deposit_memo,
     )
 
+    if not isinstance(status_data, dict):
+        raise ValueError("1Click returned an invalid refund status response.")
+
     provider_status = status_data.get("status")
 
     if not provider_status:
-        raise ValueError("Tidepool returned no refund execution status.")
+        raise ValueError("1Click returned no refund execution status.")
+
+    status_quote = status_data.get("quoteResponse")
+
+    # Verify the signed quote returned with the status response.
+    status_quote_details, status_request, status_error = (
+        _verify_refund_quote(refund, status_quote)
+    )
+
+    if status_error:
+        return _mark_review(
+            refund,
+            db,
+            status_data,
+            f"Status quote: {status_error}",
+        )
+
+    # The status response must refer to the same provider execution.
+    if status_data.get("correlationId") != refund.provider_correlation_id:
+        return _mark_review(
+            refund,
+            db,
+            status_data,
+            "Status correlation ID does not match the original refund.",
+        )
+
+    if (
+        status_quote.get("correlationId")
+        != original_response.get("correlationId")
+    ):
+        return _mark_review(
+            refund,
+            db,
+            status_data,
+            "Status quote does not match the original refund quote.",
+        )
+
+    # Ensure the signed request has not changed between quote and status.
+    for field, expected in original_request.items():
+        if status_request.get(field) != expected:
+            return _mark_review(
+                refund,
+                db,
+                status_data,
+                f"Status quote request changed field: {field}.",
+            )
 
     if provider_status in PENDING_PROVIDER_STATUSES:
         refund.provider_response = {
@@ -185,94 +341,40 @@ async def reconcile_cross_chain_refund(
         }
         db.commit()
         return _refund_response(refund)
+    
+    if provider_status == "INCOMPLETE_DEPOSIT":
+        return _mark_review(
+            refund,
+            db,
+            status_data,
+            (
+                "1Click reported an incomplete source deposit. "
+                "The refund to the original payer has not been confirmed. "
+                "Verify the source funds before taking further action."
+            ),
+        )
+
+    if provider_status == "REFUNDED":
+        return _mark_review(
+            refund,
+            db,
+            status_data,
+            (
+                "1Click refunded the source USDC to the freelancer. "
+                "The refund to the original payer did not complete. "
+                "Verify the returned funds before attempting another refund."
+            ),
+        )
 
     if provider_status != "SUCCESS":
         return _mark_review(
             refund,
             db,
             status_data,
-            f"Unexpected Tidepool refund status: {provider_status}",
+            f"Unexpected 1Click refund status: {provider_status}",
         )
 
-    original_response, original_quote = _get_quote_details(refund)
-
-    status_quote = status_data.get("quoteResponse") or {}
-    status_quote_details = status_quote.get("quote") or {}
-    status_request = status_quote.get("quoteRequest") or {}
-
-    original_request = original_response.get("quoteRequest") or {}
-
-    # Validate correlation ID against both original and status quotes.
-    correlation_id = status_data.get("correlationId")
-
-    if not correlation_id:
-        return _mark_review(
-            refund, db, status_data, "Missing Tidepool correlation ID."
-        )
-
-    if correlation_id != status_quote.get("correlationId"):
-        return _mark_review(
-            refund, db, status_data, "Tidepool status correlation ID mismatch."
-        )
-
-    if correlation_id != original_response.get("correlationId"):
-        return _mark_review(
-            refund, db, status_data, "Status does not match original refund quote."
-        )
-
-    # Validate the original quote signature.
-    original_signature = (
-        refund.quote_signature
-        or original_quote.get("signature")
-    )
-
-    if not original_signature:
-        return _mark_review(
-            refund, db, status_data, "Original refund quote signature is missing."
-        )
-
-    if status_quote.get("signature") != original_signature:
-        return _mark_review(
-            refund, db, status_data, "Tidepool refund quote signature mismatch."
-        )
-
-    if status_quote_details.get("depositAddress") != refund.deposit_address:
-        return _mark_review(
-            refund, db, status_data, "Refund deposit address mismatch."
-        )
-
-    # Validate destination asset and recipient.
-    if status_request.get("destinationAsset") != refund.destination_asset:
-        return _mark_review(
-            refund, db, status_data, "Refund destination asset mismatch."
-        )
-
-    if status_request.get("recipient") != refund.destination_address:
-        return _mark_review(
-            refund, db, status_data, "Refund recipient mismatch."
-        )
-
-    if original_request.get("destinationAsset") != status_request.get("destinationAsset"):
-        return _mark_review(
-            refund, db, status_data, "Refund destination asset changed."
-        )
-
-    if original_request.get("recipient") != status_request.get("recipient"):
-        return _mark_review(
-            refund, db, status_data, "Refund recipient changed."
-        )
-
-    if status_request.get("amount") != original_request.get("amount"):
-        return _mark_review(
-            refund, db, status_data, "Refund requested amount changed."
-        )
-
-    if status_quote_details.get("amountOut") != original_quote.get("amountOut"):
-        return _mark_review(
-            refund, db, status_data, "Refund quoted output amount mismatch."
-        )
-
-    # Retrieve actual destination token precision from Tidepool.
+    # Verify the quoted output against the selected destination token.
     try:
         token = await get_usdc_token(
             refund.destination_network,
@@ -287,25 +389,40 @@ async def reconcile_cross_chain_refund(
             f"Could not verify destination token metadata: {exc}",
         )
 
-    swap_details = status_data.get("swapDetails") or {}
-    received_units = swap_details.get("amountOut")
+    swap_details = status_data.get("swapDetails")
 
-    if received_units is None:
-        return _mark_review(
-            refund, db, status_data, "Missing actual refund output amount."
-        )
-
-    quoted_units = original_quote.get("amountOut")
-
-    if quoted_units is None or str(received_units) != str(quoted_units):
+    if not isinstance(swap_details, dict):
         return _mark_review(
             refund,
             db,
             status_data,
-            "Actual refund amount does not match exact-output quote.",
+            "Invalid or missing swap details in the 1Click status response.",
         )
 
-    # Independently ensure the quote represents the amount stored in our DB.
+    received_units = swap_details.get("amountOut")
+
+    if received_units is None:
+        return _mark_review(
+            refund,
+            db,
+            status_data,
+            "Missing actual refund output amount.",
+        )
+
+    quoted_units = original_quote.get("amountOut")
+
+    if (
+        quoted_units is None
+        or str(received_units) != str(quoted_units)
+        or str(status_quote_details.get("amountOut")) != str(quoted_units)
+    ):
+        return _mark_review(
+            refund,
+            db,
+            status_data,
+            "Actual refund amount does not match the signed quote.",
+        )
+
     expected_units = amount_to_units(
         Decimal(str(refund.expected_amount)),
         destination_decimals,
@@ -316,19 +433,17 @@ async def reconcile_cross_chain_refund(
             refund,
             db,
             status_data,
-            "Tidepool output does not match the stored expected amount.",
+            "Refund output does not match the stored expected amount.",
         )
 
-    destination_transactions = (
-        swap_details.get("destinationChainTxHashes") or []
-    )
+    destination_transactions = swap_details.get("destinationChainTxHashes")
 
-    if not destination_transactions:
+    if not isinstance(destination_transactions, list):
         return _mark_review(
             refund,
             db,
             status_data,
-            "Successful refund has no destination transaction hash.",
+            "Invalid destination transaction list.",
         )
 
     primary_transaction = next(
@@ -346,20 +461,10 @@ async def reconcile_cross_chain_refund(
             refund,
             db,
             status_data,
-            "Missing destination payout transaction.",
+            "Successful refund has no destination transaction hash.",
         )
 
-    if not isinstance(primary_transaction, dict):
-        return _mark_review(
-            refund, db, status_data, "Invalid destination transaction entry."
-        )
-
-    tx_hash = primary_transaction.get("hash")
-
-    if not isinstance(tx_hash, str) or not tx_hash.strip():
-        return _mark_review(
-            refund, db, status_data, "Missing destination transaction hash."
-        )
+    tx_hash = primary_transaction["hash"].strip()
 
     existing_transaction = (
         db.query(RefundTransaction)

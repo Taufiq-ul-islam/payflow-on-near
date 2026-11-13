@@ -7,18 +7,84 @@ from decimal import Decimal
 from app.core.config import settings
 from app.integrations.near_intents import near_intents
 from app.integrations.near_rpc import near_rpc
+from app.integrations.quote_signature import verify_quote_signature
 
 
-SUPPORTED_NETWORKS = {
-    "near",
-    "base",
-    "arb",
-    "eth",
-    "bsc",
-    "sol",
-    "stellar",
-    "sui",
+SUPPORTED_NETWORKS = {"near", "base", "arb", "eth", "bsc", "sol", "stellar", "sui"}
+
+NETWORK_ALIASES = {
+    "near": "near",
+    "near protocol": "near",
+    "base": "base",
+    "arb": "arb",
+    "arbitrum": "arb",
+    "arbitrum one": "arb",
+    "eth": "eth",
+    "ethereum": "eth",
+    "bsc": "bsc",
+    "binance smart chain": "bsc",
+    "bnb chain": "bsc",
+    "sol": "sol",
+    "solana": "sol",
+    "stellar": "stellar",
+    "sui": "sui",
 }
+
+
+def normalize_network(network: str) -> str:
+    normalized = " ".join(str(network or "").strip().lower().replace("-", " ").replace("_", " ").split())
+    return NETWORK_ALIASES.get(normalized, normalized)
+
+
+def parse_token_registry(response) -> list:
+    if isinstance(response, list):
+        tokens = response
+    elif isinstance(response, dict):
+        tokens = response.get("tokens") or response.get("data")
+
+        if isinstance(tokens, dict):
+            tokens = tokens.get("tokens")
+    else:
+        tokens = None
+
+    if not isinstance(tokens, list):
+        raise ValueError("Invalid 1Click token registry response.")
+
+    return tokens
+
+
+async def get_usdc_token_for_network(destination_network: str):
+    destination_network = normalize_network(destination_network)
+
+    if destination_network not in SUPPORTED_NETWORKS:
+        raise ValueError("Unsupported refund destination network.")
+
+    response = await near_intents.get_tokens()
+    tokens = parse_token_registry(response)
+
+    for token in tokens:
+        if not isinstance(token, dict):
+            continue
+
+        if (
+            str(token.get("symbol") or "").upper() == "USDC"
+            and normalize_network(token.get("blockchain")) == destination_network
+        ):
+            try:
+                decimals = int(token["decimals"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            asset_id = token.get("assetId")
+
+            if not asset_id or decimals < 0:
+                continue
+
+            return {**token, "decimals": decimals}
+
+    raise ValueError(
+        f"USDC is not available on the refund destination network: {destination_network}."
+    )
 
 
 def amount_to_units(amount: Decimal, decimals: int) -> str:
@@ -46,30 +112,12 @@ async def get_usdc_token(
     destination_network: str,
     destination_asset: str,
 ):
-    if destination_network not in SUPPORTED_NETWORKS:
-        raise ValueError("Unsupported refund destination network.")
+    token = await get_usdc_token_for_network(destination_network)
 
-    response = await near_intents.get_tokens()
+    if token["assetId"] != destination_asset:
+        raise ValueError("The selected USDC asset is not supported on this network.")
 
-    if isinstance(response, list):
-        tokens = response
-    elif isinstance(response, dict):
-        tokens = response.get("value", response.get("tokens", []))
-    else:
-        tokens = []
-
-    for token in tokens:
-        if (
-            token.get("symbol") == "USDC"
-            and token.get("blockchain") == destination_network
-            and token.get("assetId") == destination_asset
-        ):
-            return token
-
-    raise ValueError(
-        "The selected USDC asset is not supported on this network."
-    )
-
+    return token
 
 async def create_refund_quote(
     *,
@@ -79,6 +127,7 @@ async def create_refund_quote(
     requested_amount: Decimal,
     freelancer_near_account: str,
 ):
+    destination_network = normalize_network(destination_network)
     if not destination_address.strip():
         raise ValueError("Refund destination address is required.")
 
@@ -90,14 +139,9 @@ async def create_refund_quote(
     if not requested_amount.is_finite() or requested_amount <= 0:
         raise ValueError("Refund amount must be positive.")
 
-    token = await get_usdc_token(
-        destination_network,
-        destination_asset,
-    )
+    token = await get_usdc_token(destination_network, destination_asset)
     destination_decimals = int(token["decimals"])
 
-    # Direct NEAR USDC refund: transfer the full amount.
-    # Network gas is paid separately in NEAR.
     if destination_network == "near":
         if destination_asset != settings.usdc_asset_id:
             raise ValueError("Unsupported NEAR refund asset.")
@@ -129,8 +173,6 @@ async def create_refund_quote(
             },
         }
 
-    # Cross-chain refund: EXACT_INPUT spends the entire refundable
-    # NEAR USDC amount. The destination receives the net quoted amount.
     source_units = amount_to_units(
         requested_amount,
         settings.usdc_decimals,
@@ -150,51 +192,69 @@ async def create_refund_quote(
         "recipient": destination_address,
         "recipientType": "DESTINATION_CHAIN",
         "deadline": (
-            datetime.now(timezone.utc) + timedelta(hours=1)
+            datetime.now(timezone.utc) + timedelta(minutes=10)
         ).isoformat(),
     }
 
     response = await near_intents.get_quote(payload)
 
     if not isinstance(response, dict):
-        raise ValueError("Tidepool returned an invalid refund quote.")
+        raise ValueError("1Click returned an invalid refund quote.")
 
-    quote = response.get("quote") or {}
-    quote_request = response.get("quoteRequest") or {}
+    quote = response.get("quote")
+    quote_request = response.get("quoteRequest")
+
+    if not isinstance(quote, dict) or not isinstance(quote_request, dict):
+        raise ValueError("1Click returned an incomplete refund quote.")
+
+    if not verify_quote_signature(
+        quote_request,
+        quote,
+        response.get("timestamp"),
+        response.get("signature"),
+    ):
+        raise ValueError("1Click refund quote signature verification failed.")
+
+    correlation_id = response.get("correlationId")
+
+    if not correlation_id:
+        raise ValueError("1Click refund quote has no correlation ID.")
+
+    expected_quote_fields = {
+        "originAsset": settings.usdc_asset_id,
+        "destinationAsset": destination_asset,
+        "amount": source_units,
+        "refundTo": freelancer_near_account,
+        "recipient": destination_address,
+        "swapType": "EXACT_INPUT",
+        "depositMode": "SIMPLE",
+        "depositType": "ORIGIN_CHAIN",
+        "refundType": "ORIGIN_CHAIN",
+        "recipientType": "DESTINATION_CHAIN",
+    }
+
+    for field, expected in expected_quote_fields.items():
+        if quote_request.get(field) != expected:
+            raise ValueError(
+                f"1Click refund quote has an unexpected {field}."
+            )
 
     if not quote.get("depositAddress"):
-        raise ValueError(
-            "Tidepool did not return a refund deposit address."
-        )
-
-    if quote_request.get("destinationAsset") != destination_asset:
-        raise ValueError(
-            "Tidepool returned an unexpected destination asset."
-        )
-
-    if quote_request.get("recipient") != destination_address:
-        raise ValueError(
-            "Tidepool returned an unexpected recipient."
-        )
-
-    if quote_request.get("originAsset") != settings.usdc_asset_id:
-        raise ValueError(
-            "Tidepool returned an unexpected source asset."
-        )
+        raise ValueError("1Click did not return a refund deposit address.")
 
     amount_in = quote.get("amountIn")
     amount_out = quote.get("amountOut")
 
     if amount_in is None or amount_out is None:
-        raise ValueError(
-            "Tidepool quote is missing its input or output amount."
-        )
+        raise ValueError("1Click quote is missing its input or output amount.")
 
-    # Reject a quote that does not spend the entire refundable balance.
     if str(amount_in) != source_units:
         raise ValueError(
-            "Tidepool did not quote the entire refundable source amount."
+            "1Click did not quote the entire refundable source amount."
         )
+
+    if int(amount_out) <= 0:
+        raise ValueError("1Click returned an invalid refund output amount.")
 
     return {
         "payment_mode": "CROSS_CHAIN",
@@ -262,10 +322,18 @@ async def verify_refund_transfer(
     transfer_calls = []
 
     for action in actions:
-        function_call = action.get("FunctionCall")
+        if not isinstance(action, dict):
+            raise ValueError("Invalid action in refund transaction.")
 
-        if not function_call:
-            continue
+        if set(action.keys()) != {"FunctionCall"}:
+            raise ValueError(
+                "Unexpected action in refund transaction."
+            )
+
+        function_call = action["FunctionCall"]
+
+        if not isinstance(function_call, dict):
+            raise ValueError("Invalid function call in refund transaction.")
 
         method_name = function_call.get("method_name")
 

@@ -10,3 +10,4 @@ email-validator
 cryptography
 fastapi-redis-sdk
 py-near==1.2.22
+pynacl

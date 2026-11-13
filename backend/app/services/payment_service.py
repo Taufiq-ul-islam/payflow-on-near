@@ -73,7 +73,7 @@ def build_quote_payload(
         "recipientType": "DESTINATION_CHAIN",
 
         "deadline": (
-            datetime.now(timezone.utc) + timedelta(hours=1)
+            datetime.now(timezone.utc) + timedelta(minutes=10)
         ).isoformat(),
     }
 
